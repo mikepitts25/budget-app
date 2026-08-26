@@ -161,6 +161,12 @@ a { color: var(--accent); }
   .topbar { padding: 10px 14px; gap: 8px; }
   .topbar-title h1 { font-size: 18px; }
   .topbar-sub { display: none; }
+  /* Too many controls for one narrow row: undo/redo and the person switcher
+     live in the drawer on small screens instead of overlapping the theme
+     toggle. Scoped to .topbar so the generic .row and .seg rules further down
+     the file cannot re-show them. */
+  .topbar .topbar-history,
+  .topbar .topbar-person { display: none; }
 
   /* The sidebar becomes a drawer rather than disappearing. */
   .sidebar {

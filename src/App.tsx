@@ -130,12 +130,23 @@ export default function App() {
         ))}
 
         <div className="spacer" />
-        <div className="row gap-6" style={{ padding: '10px 8px 0' }}>
+        <div className="nav-section">Using the app</div>
+        <div className="row gap-6" style={{ padding: '0 8px 4px' }}>
           {state.people.map((p) => (
-            <span key={p.id} className="chip" style={{ borderColor: p.color }}>
+            <button
+              key={p.id}
+              className="chip"
+              style={{
+                borderColor: p.id === state.settings.activePersonId ? p.color : undefined,
+                cursor: 'pointer',
+                opacity: p.id === state.settings.activePersonId ? 1 : 0.55,
+              }}
+              onClick={() => dispatch({ type: 'settings/update', patch: { activePersonId: p.id } })}
+              title={`Act as ${p.name} — comments, sign-offs and private spending follow this`}
+            >
               <span className="dot" style={{ background: p.color }} />
               {p.name}
-            </span>
+            </button>
           ))}
         </div>
       </aside>
@@ -179,7 +190,7 @@ export default function App() {
           </div>
           {!isCurrent && <span className="chip warn">Viewing a past month</span>}
 
-          <div className="row gap-4">
+          <div className="row gap-4 topbar-history">
             <button
               className="btn ghost sm"
               onClick={undo}
@@ -200,7 +211,7 @@ export default function App() {
             </button>
           </div>
 
-          <div className="seg" title="Who is using the app right now">
+          <div className="seg topbar-person" title="Who is using the app right now">
             {state.people.map((p) => (
               <button
                 key={p.id}

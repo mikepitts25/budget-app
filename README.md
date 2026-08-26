@@ -12,7 +12,11 @@ connection: your financial history stays on your machine.
 ```bash
 npm install
 npm run dev      # http://localhost:5173
+npm test         # 154 tests over the domain logic
 ```
+
+It installs as an app (service worker + manifest) and works fully offline —
+appropriate for something whose data never leaves your device anyway.
 
 The app opens on a demo household so every screen has something in it. When you
 are ready, **Settings → Start from scratch** clears it and gives you an empty
@@ -24,14 +28,41 @@ ledger.
 
 ### Track
 - **Transactions** — add, edit, tag, search, filter and bulk-recategorize. Every
-  entry records who paid and how the cost is shared.
-- **CSV import** — drop in a bank export. Columns are detected automatically,
-  duplicates are skipped, and payees you have categorized before are matched to
-  the same category again.
-- **Accounts and net worth** — checking, savings, cards, investments, retirement,
-  property and loans, with monthly snapshots and a net-worth chart.
+  entry records who paid, how the cost is shared, and whether it is pending,
+  cleared or reconciled.
+- **Import** — CSV, or better, **OFX/QFX/QIF**, which carry the bank's own
+  transaction id so re-importing an overlapping statement is exact rather than
+  guessed. Columns are detected automatically, payees you have categorized before
+  are matched again, and your rules run over everything on the way in.
+- **Rules** — match on payee text or regex, note, account, amount range or
+  direction; set category, split, payer, tags, privacy, or rewrite a messy bank
+  description into a readable payee. The editor previews exactly which existing
+  transactions a rule would touch before you save it, and any transaction can
+  seed a rule in one click.
+- **Accounts, transfers and reconciliation** — balances are *derived* (opening
+  balance plus every transaction), so the ledger and the balance can never
+  disagree. Transfers are two mirrored legs that net to zero and are excluded
+  from income and spending. Reconcile against a statement and the difference
+  becomes one visible adjusting entry rather than a quietly rewritten balance.
 - **Reports** — 6/12/24-month trends, every category with its own sparkline and
   trend percentage, biggest payees, spending by person, totals by tag.
+- **Undo/redo** — 50 steps, Ctrl/Cmd+Z, with a transfer undoing as one step.
+
+### Forecast
+The question people actually open a budgeting app to ask: *will we make it to
+payday?*
+
+- Scheduled commitments carry a cadence (weekly through annual, including
+  semimonthly) and are **proposed automatically** from detected recurring charges
+  and from the pay pattern in your real income — accepted, not typed.
+- The balance is projected **day by day** from what is in your spending accounts
+  now, future-dated entries already recorded, and every scheduled item.
+- Everyday spending is subtracted as a **daily drip** from your own three-month
+  average, because a forecast built only from fixed bills is always too
+  optimistic.
+- **Safe-to-spend** is measured against the trough of the next 30 days, not the
+  next payday — with a paycheck landing tomorrow, the payday measure would tell
+  you to spend the rent.
 
 ### Budget
 - **Envelopes per month**, grouped by category, with planned vs actual, pace
@@ -45,6 +76,40 @@ ledger.
 - **Settle up** in the fewest possible transfers, with a copyable summary.
 - Balance-between-you tracked over time, contribution history, who carries which
   category, and a personal-spending comparison for couples who run an allowance.
+- **Comment threads** on any transaction, attributed to whichever partner is
+  using the app. "What was this?" belongs next to the transaction, not
+  remembered wrong three weeks later.
+- **Sign-offs** on discretionary purchases above a threshold you agree. Essential
+  categories and scheduled bills are excluded — a queue full of rent would train
+  you both to ignore it.
+- **Private spending** hides its detail, not its total. Your partner still sees
+  the amount, since it is shared money, but not the merchant. Hiding the amount
+  would quietly corrupt every total in the app.
+- **Money date** — a monthly review assembled from every engine in the app: three
+  wins, three leaks, three things to decide together, one line each to read out
+  loud. Copies to text, prints.
+
+### Insights
+Nine analyses of your own history, each stated as something to act on:
+
+- **Fixed vs variable costs** — the share of income already spoken for is the
+  real measure of how much room you have if an income stops.
+- **Income volatility** sets your emergency-fund target: steady salaries need
+  three months, lumpy income nine.
+- **Anomalies** — category spikes against each category's own distribution,
+  probable double charges, first-time merchants, trials that converted to full
+  price.
+- **Seasonality** — annual lumps turned into monthly sinking funds, creatable as
+  rollover envelopes in one click.
+- **Lifestyle creep** — compares halves of the year using medians, so one bonus
+  cannot read as a pay rise then a pay cut.
+- **Freedom metrics** — at a 4% withdrawal rate, this month's surplus bought you
+  a countable number of days of not needing to work.
+- **Net-worth attribution** — saved vs debt paid vs market, so a bad market month
+  does not read as a personal failure.
+- **Basket inflation** — paying more per visit is prices; going more often is
+  habit. They need different responses.
+- **Heatmaps** — when money leaves, by weekday and day of month.
 
 ### Find savings
 Every finding is derived from your own data and carries a number:
@@ -73,7 +138,10 @@ also shows what the freed-up money becomes if it is invested instead of spent.
   opportunity cost; and a life-shock model for an income drop plus a new recurring
   cost, against your real runway.
 - **Retirement** — your number, inflated to your retirement year, against a
-  compounded projection for both partners, with a sensitivity table.
+  compounded projection for both partners, with a sensitivity table, plus a
+  **Monte Carlo simulation**: a thousand runs with random annual returns, a
+  success rate, percentile bands and the single worst run, because the order good
+  and bad years arrive in matters more than the average.
 - **Debt payoff** — snowball against avalanche, month by month, with the interest
   each one costs and the interest both save against paying minimums.
 
@@ -95,6 +163,11 @@ No black boxes — the same notes are in the app, at the bottom of Settings.
 - **Subscriptions.** A payee is recurring when it has charged at least three times,
   with 70% of gaps within 25% of the median gap and 80% of amounts within 15% of
   the median amount.
+- **Trends** always anchor on the last complete month. A window ending mid-month
+  would otherwise read as a collapse in both income and spending.
+- **Deduplication** prefers the source's own id (OFX FITID) and falls back to
+  date, amount and payee — which is why Quicken formats are worth preferring over
+  CSV.
 - **Goals and retirement** compound monthly at the return you set. "Needs" is the
   contribution that lands exactly on the target on the target date.
 - **Debt.** Interest accrues monthly before payments land. Freed-up minimums roll
@@ -127,12 +200,26 @@ src/
     recurring.ts   subscription detection
     savings.ts     the savings finder
     projections.ts compounding, goals, retirement, affordability
+    montecarlo.ts  seeded retirement simulation
     debt.ts        snowball / avalanche simulation
+    analysis.ts    cost structure, volatility, anomalies, creep, freedom metrics
+    forecast.ts    daily balance projection and safe-to-spend
+    schedule.ts    cadences, occurrences, auto-proposed commitments
+    rules.ts       matching and applying filing rules
+    couples.ts     privacy, sign-offs, the money date report
     csv.ts         import parsing, column guessing, payee learning
-  store/         types, reducer, persistence, selectors, demo data
+    ofx.ts         OFX / QFX / QIF parsing
+    sources.ts     provider-agnostic ingestion (files today, banks later)
+  store/         types, reducer + undo history, migrations, selectors, demo data
   components/    UI primitives and hand-rolled SVG charts (no chart library)
   pages/         one file per screen
 ```
+
+`src/lib` is pure TypeScript with no React import anywhere, which is why it can
+be tested directly — 154 tests covering allocation, splits and settlement,
+recurrence detection, debt strategies, projections, forecast cadences, rules
+precedence, OFX/QIF parsing, statistics, Monte Carlo properties, and the reducer
+including its v1→v2 migration.
 
 Built with React, TypeScript and Vite. The only runtime dependencies are React
 and React DOM — the charts, the mind-map canvas and the CSV parser are all local
@@ -142,5 +229,20 @@ code, so there is nothing to keep patched and nothing phoning home.
 npm run dev        # dev server
 npm run build      # typecheck + production build to dist/
 npm run typecheck  # types only
+npm test           # run the suite
+npm run test:watch # watch mode
 npm run preview    # serve the production build
 ```
+
+## Connecting your banks
+
+Short answer: you cannot do it from a browser, and for two people using this
+privately you probably should not bother — file import plus SimpleFIN gets ~95%
+of the value for about $18/year and no server.
+
+[**BANKING.md**](./BANKING.md) covers the whole picture: why a backend is
+unavoidable, the token-exchange flow, provider comparison, the operational
+burden (expect 5–15% of connections to need reconnecting monthly), the PSD2 and
+Section 1033 compliance position, and how `src/lib/sources.ts` is already
+structured so adding a provider means writing one adapter rather than touching
+the app.
