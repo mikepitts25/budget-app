@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useReducer } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useReducer } from 'react';
 import type {
   Account,
   AppState,
@@ -371,6 +371,61 @@ export function reducer(state: AppState, action: Action): AppState {
   }
 }
 
+/**
+ * Actions that should not create an undo step. Loading a file, switching who is
+ * using the app or flipping the theme are not edits to the household's data, and
+ * cluttering the undo stack with them makes undo useless for the edits that
+ * matter.
+ */
+const TRANSIENT_ACTIONS = new Set<Action['type']>(['load', 'settings/update']);
+
+export interface History {
+  past: AppState[];
+  present: AppState;
+  future: AppState[];
+}
+
+const HISTORY_LIMIT = 50;
+
+export type HistoryAction = Action | { type: 'undo' } | { type: 'redo' };
+
+/**
+ * Wraps the reducer with an undo stack. State snapshots are cheap here because
+ * the reducer is already immutable — every action returns a fresh object and
+ * shares everything it did not touch.
+ */
+export function historyReducer(history: History, action: HistoryAction): History {
+  if (action.type === 'undo') {
+    if (!history.past.length) return history;
+    const previous = history.past[history.past.length - 1];
+    return {
+      past: history.past.slice(0, -1),
+      present: previous,
+      future: [history.present, ...history.future].slice(0, HISTORY_LIMIT),
+    };
+  }
+  if (action.type === 'redo') {
+    if (!history.future.length) return history;
+    const [next, ...rest] = history.future;
+    return {
+      past: [...history.past, history.present].slice(-HISTORY_LIMIT),
+      present: next,
+      future: rest,
+    };
+  }
+
+  const next = reducer(history.present, action);
+  if (next === history.present) return history;
+  if (TRANSIENT_ACTIONS.has(action.type)) return { ...history, present: next };
+
+  return {
+    past: [...history.past, history.present].slice(-HISTORY_LIMIT),
+    present: next,
+    // Any new edit abandons the redo branch, as it does in every editor.
+    future: [],
+  };
+}
+
 const sortTx = (txs: Transaction[]): Transaction[] =>
   [...txs].sort((a, b) => b.date.localeCompare(a.date));
 
@@ -450,6 +505,10 @@ export function saveState(state: AppState): void {
 interface Ctx {
   state: AppState;
   dispatch: React.Dispatch<Action>;
+  undo: () => void;
+  redo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
   /** Format cents in the household's currency. */
   money: (cents: number, opts?: { compact?: boolean; sign?: boolean }) => string;
   /** The month the app is currently focused on. */
@@ -460,8 +519,17 @@ interface Ctx {
 const AppContext = createContext<Ctx | null>(null);
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, undefined, loadState);
+  const [history, dispatchHistory] = useReducer(historyReducer, undefined, () => ({
+    past: [],
+    present: loadState(),
+    future: [],
+  }));
+  const state = history.present;
   const [month, setMonth] = React.useState<string>(() => state.settings.pinnedMonth || currentMonth());
+
+  const dispatch = useCallback((action: Action) => dispatchHistory(action), []);
+  const undo = useCallback(() => dispatchHistory({ type: 'undo' }), []);
+  const redo = useCallback(() => dispatchHistory({ type: 'redo' }), []);
 
   useEffect(() => {
     const handle = window.setTimeout(() => saveState(state), 250);
@@ -472,10 +540,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     document.documentElement.dataset.theme = state.settings.theme;
   }, [state.settings.theme]);
 
+  // Ctrl/Cmd+Z and Shift+Ctrl/Cmd+Z, unless the user is typing in a field.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'z') return;
+      const target = e.target as HTMLElement | null;
+      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+      e.preventDefault();
+      if (e.shiftKey) redo();
+      else undo();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [undo, redo]);
+
   const value = useMemo<Ctx>(
     () => ({
       state,
       dispatch,
+      undo,
+      redo,
+      canUndo: history.past.length > 0,
+      canRedo: history.future.length > 0,
       money: (cents, opts) =>
         formatMoney(cents, {
           currency: state.settings.currency,
@@ -485,7 +571,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       month,
       setMonth,
     }),
-    [state, month],
+    [state, month, history.past.length, history.future.length, dispatch, undo, redo],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

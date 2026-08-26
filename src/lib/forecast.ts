@@ -1,5 +1,5 @@
 import type { AppState, ID } from '../store/types';
-import { accountBalances, isTransfer, LIQUID_TYPES, txInMonths } from '../store/selectors';
+import { isTransfer, LIQUID_TYPES, txInMonths } from '../store/selectors';
 import { addDays, dateRange, monthRange, todayISO } from './date';
 import { allOccurrences, monthlyEquivalent, type Occurrence } from './schedule';
 
@@ -75,14 +75,19 @@ export function buildForecast(
 ): Forecast {
   const to = addDays(from, horizonDays);
   const dailyVariable = opts.includeVariable === false ? 0 : variableDailySpend(state, from.slice(0, 7));
-  const balances = accountBalances(state);
 
   // Only spendable accounts: savings should not silently absorb the bills.
   const operating = state.accounts.filter(
     (a) => !a.archived && (a.type === 'checking' || a.type === 'cash'),
   );
   const operatingIds = new Set(operating.map((a) => a.id));
-  const startingBalance = operating.reduce((total, a) => total + (balances[a.id] ?? 0), 0);
+
+  // The balance as of today only — future-dated entries are projected below, and
+  // counting them here as well would double them.
+  let startingBalance = operating.reduce((total, a) => total + a.openingBalance, 0);
+  for (const t of state.transactions) {
+    if (operatingIds.has(t.accountId) && t.date <= from) startingBalance += t.amount;
+  }
 
   const events = new Map<string, ForecastEvent[]>();
   const push = (e: ForecastEvent) => {

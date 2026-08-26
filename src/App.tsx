@@ -78,7 +78,7 @@ const readHash = (): PageKey => {
 };
 
 export default function App() {
-  const { state, dispatch, month, setMonth } = useApp();
+  const { state, dispatch, month, setMonth, undo, redo, canUndo, canRedo } = useApp();
   const [page, setPage] = useState<PageKey>(readHash);
   const [navOpen, setNavOpen] = useState(false);
 
@@ -178,6 +178,27 @@ export default function App() {
             </button>
           </div>
           {!isCurrent && <span className="chip warn">Viewing a past month</span>}
+
+          <div className="row gap-4">
+            <button
+              className="btn ghost sm"
+              onClick={undo}
+              disabled={!canUndo}
+              title="Undo (Ctrl+Z)"
+              aria-label="Undo"
+            >
+              ↶
+            </button>
+            <button
+              className="btn ghost sm"
+              onClick={redo}
+              disabled={!canRedo}
+              title="Redo (Shift+Ctrl+Z)"
+              aria-label="Redo"
+            >
+              ↷
+            </button>
+          </div>
 
           <div className="seg" title="Who is using the app right now">
             {state.people.map((p) => (
