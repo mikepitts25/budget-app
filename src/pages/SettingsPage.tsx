@@ -3,6 +3,7 @@ import { useApp } from '../store/store';
 import type { AppState, Category, CategoryGroup } from '../store/types';
 import { uid } from '../lib/id';
 import { Card, ConfirmButton, Field, MoneyInput, PercentInput, useToast } from '../components/ui';
+import RulesManager from '../components/RulesManager';
 
 const GROUPS: CategoryGroup[] = [
   'Income', 'Housing', 'Transport', 'Food', 'Health', 'Kids',
@@ -196,6 +197,8 @@ export default function SettingsPage() {
           </div>
         </Card>
       </div>
+
+      <RulesManager />
 
       <Card
         title="Categories"

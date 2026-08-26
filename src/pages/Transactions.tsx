@@ -6,6 +6,8 @@ import { dateLabel, monthLabel, todayISO } from '../lib/date';
 import { uid } from '../lib/id';
 import { guessColumns, parseCSV, rowsToTransactions, transactionsToCSV, type ColumnMap } from '../lib/csv';
 import { shareOf } from '../lib/split';
+import { categorizeIncoming, ruleFromTransaction } from '../lib/rules';
+import { RuleModal } from '../components/RulesManager';
 import { Card, ConfirmButton, Empty, Field, Modal, MoneyInput, Segmented, useToast } from '../components/ui';
 
 type Filter = 'all' | 'in' | 'out';
@@ -366,6 +368,7 @@ function TransactionModal({
   const { state, dispatch, money } = useApp();
   const toast = useToast();
   const [draft, setDraft] = useState<Transaction>(tx);
+  const [makingRule, setMakingRule] = useState<import('../store/types').Rule | null>(null);
   const set = <K extends keyof Transaction>(key: K, value: Transaction[K]) =>
     setDraft((d) => ({ ...d, [key]: value }));
 
@@ -377,9 +380,18 @@ function TransactionModal({
       toast('Give the transaction a payee first');
       return;
     }
-    if (isNew) dispatch({ type: 'tx/add', tx: draft });
-    else dispatch({ type: 'tx/update', id: draft.id, patch: draft });
-    toast(isNew ? 'Transaction added' : 'Transaction updated');
+    if (isNew) {
+      const [filed] = categorizeIncoming(state, [draft]);
+      dispatch({ type: 'tx/add', tx: filed });
+      toast(
+        filed.categoryId === draft.categoryId
+          ? 'Transaction added'
+          : 'Transaction added and filed by your rules',
+      );
+    } else {
+      dispatch({ type: 'tx/update', id: draft.id, patch: draft });
+      toast('Transaction updated');
+    }
     onClose();
   };
 
@@ -548,6 +560,14 @@ function TransactionModal({
         </div>
       )}
 
+      {!isNew && (
+        <div className="row">
+          <button className="btn sm" onClick={() => setMakingRule(ruleFromTransaction(draft, state.rules.length + 1))}>
+            ⚡ Always file {draft.payee} like this
+          </button>
+        </div>
+      )}
+
       {draft.transferId && (
         <div className="callout warn small">
           This is one leg of a transfer between your own accounts. Deleting it removes both legs; changing
@@ -580,6 +600,8 @@ function TransactionModal({
           onChange={(e) => set('tags', e.target.value.split(/\s+/).filter(Boolean))}
         />
       </Field>
+
+      {makingRule && <RuleModal rule={makingRule} isNew onClose={() => setMakingRule(null)} />}
     </Modal>
   );
 }
@@ -632,8 +654,13 @@ function ImportModal({ onClose }: { onClose: () => void }) {
             disabled={!preview || !preview.transactions.length}
             onClick={() => {
               if (!preview) return;
-              dispatch({ type: 'tx/addMany', txs: preview.transactions });
-              toast(`Imported ${preview.transactions.length} transactions`);
+              const filed = categorizeIncoming(state, preview.transactions);
+              dispatch({ type: 'tx/addMany', txs: filed });
+              toast(
+                `Imported ${filed.length} transactions${
+                  state.rules.length ? ` through ${state.rules.length} rules` : ''
+                }`,
+              );
               onClose();
             }}
           >
