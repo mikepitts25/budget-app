@@ -1,0 +1,16 @@
+{
+  "name": "Two Ledgers — Budgeting for Couples",
+  "short_name": "Two Ledgers",
+  "description": "A local-first budgeting, planning and life-mapping app built for two people.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0d0f18",
+  "theme_color": "#0d0f18",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
