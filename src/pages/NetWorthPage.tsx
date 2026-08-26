@@ -3,13 +3,15 @@ import { useApp } from '../store/store';
 import type { Account, AccountType, Transaction } from '../store/types';
 import {
   accountBalances,
+  accountBalancesBase,
   clearedBalance,
   LIABILITY_TYPES,
   netWorth,
   txInMonth,
 } from '../store/selectors';
+import { CURRENCIES, isMultiCurrency } from '../lib/currency';
 import { monthLabel, todayISO } from '../lib/date';
-import { uid } from '../lib/id';
+import { makeAccount, makeTransaction } from '../store/factory';
 import { sum } from '../lib/money';
 import {
   Card,
@@ -44,6 +46,8 @@ export default function NetWorthPage() {
 
   const nw = netWorth(state);
   const balances = useMemo(() => accountBalances(state), [state]);
+  const balancesBase = useMemo(() => accountBalancesBase(state), [state]);
+  const multi = isMultiCurrency(state);
   const accounts = state.accounts.filter((a) => showArchived || !a.archived);
   const assets = accounts.filter((a) => !LIABILITY_TYPES.has(a.type));
   const history = state.netWorth;
@@ -54,16 +58,7 @@ export default function NetWorthPage() {
   const add = () =>
     dispatch({
       type: 'account/add',
-      account: {
-        id: uid('ac'),
-        name: 'New account',
-        institution: '',
-        type: 'checking',
-        owner: 'joint',
-        openingBalance: 0,
-        apr: 0,
-        archived: false,
-      },
+      account: makeAccount(state),
     });
 
   const patch = (id: string, p: Partial<Account>) => dispatch({ type: 'account/update', id, patch: p });
@@ -137,7 +132,7 @@ export default function NetWorthPage() {
             <Donut
               slices={assets.map((a, i) => ({
                 label: a.name,
-                value: Math.max(0, balances[a.id] ?? 0),
+                value: Math.max(0, balancesBase[a.id] ?? 0),
                 color: SERIES_COLORS[i % SERIES_COLORS.length],
               }))}
               center={money(nw.assets, { compact: true })}
@@ -158,7 +153,9 @@ export default function NetWorthPage() {
 
       <Card
         title="Accounts"
-        hint="Balances are derived: opening balance plus every transaction. Nothing writes a balance directly, so the ledger and the number can never disagree."
+        hint={`Balances are derived: opening balance plus every transaction. Nothing writes a balance directly, so the ledger and the number can never disagree.${
+          multi ? ` Foreign balances are shown in their own currency, with today's value in ${state.settings.baseCurrency} underneath.` : ''
+        }`}
         actions={
           <div className="row gap-6">
             <label className="tiny faint row gap-4">
@@ -180,10 +177,11 @@ export default function NetWorthPage() {
               <tr>
                 <th>Name</th>
                 <th style={{ width: 120 }}>Institution</th>
-                <th style={{ width: 120 }}>Type</th>
-                <th style={{ width: 110 }}>Owner</th>
-                <th style={{ width: 130 }}>Opening</th>
-                <th className="right" style={{ width: 130 }}>Balance now</th>
+                <th style={{ width: 110 }}>Type</th>
+                <th style={{ width: 100 }}>Owner</th>
+                <th style={{ width: 90 }}>Currency</th>
+                <th style={{ width: 120 }}>Opening</th>
+                <th className="right" style={{ width: 140 }}>Balance now</th>
                 <th style={{ width: 90 }}>Rate</th>
                 <th style={{ width: 130 }} />
               </tr>
@@ -234,9 +232,27 @@ export default function NetWorthPage() {
                       </select>
                     </td>
                     <td>
+                      <select
+                        className="select"
+                        value={a.currency}
+                        onChange={(e) => patch(a.id, { currency: e.target.value })}
+                      >
+                        {CURRENCIES.map((c) => (
+                          <option key={c.code} value={c.code}>
+                            {c.code}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td>
                       <MoneyInput value={a.openingBalance} onChange={(c) => patch(a.id, { openingBalance: c })} />
                     </td>
-                    <td className="right num bold">{money(live)}</td>
+                    <td className="right num bold">
+                      {money(live, { currency: a.currency })}
+                      {a.currency !== state.settings.baseCurrency && (
+                        <div className="tiny faint">= {money(balancesBase[a.id] ?? 0)}</div>
+                      )}
+                    </td>
                     <td>
                       <PercentInput value={a.apr} onChange={(v) => patch(a.id, { apr: v })} />
                     </td>
@@ -309,8 +325,7 @@ function ReconcileModal({ account, onClose }: { account: Account; onClose: () =>
               // than a silently edited balance.
               const adjustment: Transaction | undefined =
                 difference !== 0
-                  ? {
-                      id: uid('tx'),
+                  ? makeTransaction(state, {
                       date,
                       amount: difference,
                       accountId: account.id,
@@ -319,15 +334,10 @@ function ReconcileModal({ account, onClose }: { account: Account; onClose: () =>
                         state.categories[0].id,
                       payee: 'Reconciliation adjustment',
                       note: `Statement ${money(statement)} vs ledger ${money(settled)}`,
-                      paidBy: 'joint',
                       splitRule: 'income',
-                      splitShares: {},
                       tags: ['reconciliation'],
                       status: 'reconciled',
-                      comments: [],
-                      approvals: [],
-                      private: false,
-                    }
+                    })
                   : undefined;
               dispatch({ type: 'account/reconcile', id: account.id, date, balance: statement, adjustment });
               dispatch({

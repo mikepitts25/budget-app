@@ -1,6 +1,9 @@
 import type { Transaction } from '../store/types';
 import { monthOf } from './date';
 
+/** Base-currency value, so a euro subscription ranks against a dollar one. */
+const value = (tx: Transaction): number => tx.baseAmount ?? tx.amount;
+
 export interface RecurringSeries {
   key: string;
   payee: string;
@@ -63,7 +66,7 @@ const perMonth: Record<RecurringSeries['cadence'], number> = {
 export function detectRecurring(transactions: Transaction[]): RecurringSeries[] {
   const groups = new Map<string, Transaction[]>();
   for (const tx of transactions) {
-    if (tx.amount >= 0) continue;
+    if (value(tx) >= 0) continue;
     const key = norm(tx.payee);
     if (key.length < 3) continue;
     const list = groups.get(key) ?? [];
@@ -80,7 +83,7 @@ export function detectRecurring(transactions: Transaction[]): RecurringSeries[] 
     const cadenceDays = median(gaps);
     if (cadenceDays < 5) continue; // several charges a week is shopping, not a subscription
 
-    const amounts = txs.map((t) => Math.abs(t.amount));
+    const amounts = txs.map((t) => Math.abs(value(t)));
     const typical = median(amounts);
     if (typical <= 0) continue;
     // Prices must be stable: 80% of charges within 15% of the median.
@@ -103,7 +106,7 @@ export function detectRecurring(transactions: Transaction[]): RecurringSeries[] 
       lastDate: txs[txs.length - 1].date,
       monthlyCost,
       annualCost: monthlyCost * 12,
-      priceIncrease: Math.abs(txs[0].amount) > 0
+      priceIncrease: Math.abs(value(txs[0])) > 0
         ? (amounts[amounts.length - 1] - amounts[0]) / amounts[0]
         : 0,
       transactions: txs,
@@ -128,7 +131,7 @@ export function occurrencesByMonth(series: RecurringSeries): Record<string, numb
   const out: Record<string, number> = {};
   for (const tx of series.transactions) {
     const m = monthOf(tx.date);
-    out[m] = (out[m] ?? 0) + Math.abs(tx.amount);
+    out[m] = (out[m] ?? 0) + Math.abs(value(tx));
   }
   return out;
 }

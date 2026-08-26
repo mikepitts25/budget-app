@@ -3,8 +3,9 @@ import { addMonths, monthOf, monthRange, todayISO } from './date';
 import { formatMoney, sum } from './money';
 import { detectRecurring, staleSeries, type RecurringSeries } from './recurring';
 import {
-  accountBalances,
+  accountBalancesBase,
   averageSurplus,
+  base,
   categoryMap,
   expense,
   income,
@@ -32,7 +33,7 @@ export interface Suggestion {
 }
 
 const money = (state: AppState, cents: number): string =>
-  formatMoney(cents, { currency: state.settings.currency, locale: state.settings.locale });
+  formatMoney(cents, { currency: state.settings.baseCurrency, locale: state.settings.locale });
 
 /**
  * Transactions worth scanning for subscriptions. A standing transfer into the
@@ -40,7 +41,7 @@ const money = (state: AppState, cents: number): string =>
  */
 export function recurringCandidates(state: AppState, txs: Transaction[]): Transaction[] {
   const cats = categoryMap(state);
-  return txs.filter((t) => t.amount < 0 && cats[t.categoryId]?.group !== 'Savings');
+  return txs.filter((t) => base(t) < 0 && cats[t.categoryId]?.group !== 'Savings');
 }
 
 /**
@@ -67,8 +68,8 @@ export function findSavings(state: AppState, month: string): Suggestion[] {
     if (!cat || cat.essential) continue;
     const priorTotal = sum(
       txInMonths(state, prior)
-        .filter((t) => t.categoryId === row.categoryId && t.amount < 0)
-        .map((t) => Math.abs(t.amount)),
+        .filter((t) => t.categoryId === row.categoryId && base(t) < 0)
+        .map((t) => Math.abs(base(t))),
     );
     const avg = Math.round(priorTotal / 3);
     if (avg < 5000 || row.amount < avg * 1.25) continue;
@@ -89,8 +90,8 @@ export function findSavings(state: AppState, month: string): Suggestion[] {
   // --- Wants share of income against the 50/30/20 guideline.
   const wants = sum(
     txInMonths(state, last6)
-      .filter((t) => t.amount < 0 && cats[t.categoryId] && !cats[t.categoryId].essential)
-      .map((t) => Math.abs(t.amount)),
+      .filter((t) => base(t) < 0 && cats[t.categoryId] && !cats[t.categoryId].essential)
+      .map((t) => Math.abs(base(t))),
   );
   const wantsMonthly = Math.round(wants / Math.max(1, summaries.length));
   if (avgIncome > 0 && wantsMonthly / avgIncome > 0.3) {
@@ -208,18 +209,18 @@ function habitFindings(state: AppState, month: string, money: (c: number) => str
   const out: Suggestion[] = [];
   const cats = categoryMap(state);
   const months = monthRange(month, 3);
-  const txs = txInMonths(state, months).filter((t) => t.amount < 0);
+  const txs = txInMonths(state, months).filter((t) => base(t) < 0);
 
   // --- Small, frequent, discretionary purchases: the classic leak.
   const groups = new Map<string, { count: number; total: number; payee: string; cat: string }>();
   for (const t of txs) {
     const cat = cats[t.categoryId];
     if (!cat || cat.essential) continue;
-    if (Math.abs(t.amount) > 3000) continue;
+    if (Math.abs(base(t)) > 3000) continue;
     const key = t.payee.toLowerCase().trim();
     const g = groups.get(key) ?? { count: 0, total: 0, payee: t.payee, cat: cat.name };
     g.count += 1;
-    g.total += Math.abs(t.amount);
+    g.total += Math.abs(base(t));
     groups.set(key, g);
   }
   for (const [key, g] of groups) {
@@ -242,7 +243,7 @@ function habitFindings(state: AppState, month: string, money: (c: number) => str
   // --- Bank and card fees: pure waste, almost always avoidable.
   const fees = txs.filter((t) => FEE_WORDS.test(t.payee) || FEE_WORDS.test(t.note));
   if (fees.length) {
-    const monthly = Math.round(sum(fees.map((t) => Math.abs(t.amount))) / 3);
+    const monthly = Math.round(sum(fees.map((t) => Math.abs(base(t)))) / 3);
     if (monthly > 0) {
       out.push({
         key: 'fees',
@@ -263,9 +264,9 @@ function habitFindings(state: AppState, month: string, money: (c: number) => str
     const cat = cats[t.categoryId];
     return (d === 0 || d === 6) && cat && !cat.essential;
   });
-  const weekendTotal = sum(weekend.map((t) => Math.abs(t.amount)));
+  const weekendTotal = sum(weekend.map((t) => Math.abs(base(t))));
   const discTotal = sum(
-    txs.filter((t) => cats[t.categoryId] && !cats[t.categoryId].essential).map((t) => Math.abs(t.amount)),
+    txs.filter((t) => cats[t.categoryId] && !cats[t.categoryId].essential).map((t) => Math.abs(base(t))),
   );
   if (discTotal > 0 && weekendTotal / discTotal > 0.5 && weekendTotal > 30000) {
     const saving = Math.round(weekendTotal / 3 / 5);
@@ -290,7 +291,7 @@ function rateFindings(state: AppState, month: string): Suggestion[] {
   const m = (c: number) => money(state, c);
   const HYSA = 0.042;
 
-  const balances = accountBalances(state);
+  const balances = accountBalancesBase(state);
   const idle = state.accounts.filter(
     (a) => !a.archived && (a.type === 'checking' || a.type === 'cash') && (balances[a.id] ?? 0) > 0,
   );
@@ -362,8 +363,8 @@ function structureFindings(state: AppState, month: string): Suggestion[] {
     const monthlyEssential =
       sum(
         txInMonths(state, monthRange(month, 3))
-          .filter((t) => t.amount < 0 && categoryMap(state)[t.categoryId]?.essential)
-          .map((t) => Math.abs(t.amount)),
+          .filter((t) => base(t) < 0 && categoryMap(state)[t.categoryId]?.essential)
+          .map((t) => Math.abs(base(t))),
       ) / 3;
     out.push({
       key: 'runway',
@@ -382,8 +383,8 @@ function structureFindings(state: AppState, month: string): Suggestion[] {
   for (const line of lines) {
     const spent = sum(
       txInMonth(state, month)
-        .filter((t) => t.categoryId === line.categoryId && t.amount < 0)
-        .map((t) => Math.abs(t.amount)),
+        .filter((t) => t.categoryId === line.categoryId && base(t) < 0)
+        .map((t) => Math.abs(base(t))),
     );
     const slack = line.planned - spent;
     const cat = categoryMap(state)[line.categoryId];
@@ -431,11 +432,11 @@ export function spendMix(state: AppState, month: string): { needs: number; wants
   let needs = 0;
   let wants = 0;
   for (const t of txs) {
-    if (t.amount >= 0) continue;
+    if (base(t) >= 0) continue;
     const cat = cats[t.categoryId];
     if (cat?.group === 'Savings') continue;
-    if (cat?.essential) needs += Math.abs(t.amount);
-    else wants += Math.abs(t.amount);
+    if (cat?.essential) needs += Math.abs(base(t));
+    else wants += Math.abs(base(t));
   }
   return { needs, wants, savings: Math.max(0, inc - expense(state, txs)) };
 }

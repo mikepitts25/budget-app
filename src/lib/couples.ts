@@ -1,5 +1,5 @@
 import type { AppState, ID, Transaction } from '../store/types';
-import { categoryMap, isTransfer, monthSummary, txInMonth } from '../store/selectors';
+import { base, categoryMap, isTransfer, monthSummary, txInMonth } from '../store/selectors';
 import { fairness } from './split';
 import { findSavings } from './savings';
 import { findAnomalies, freedomMetrics, lifestyleCreep } from './analysis';
@@ -32,8 +32,9 @@ export const canSeeDetail = (state: AppState, tx: Transaction): boolean =>
 export function needsApproval(state: AppState, tx: Transaction): boolean {
   const threshold = state.settings.bigPurchaseThreshold;
   if (threshold <= 0) return false;
-  if (tx.amount >= 0 || isTransfer(state, tx)) return false;
-  if (Math.abs(tx.amount) < threshold) return false;
+  if (base(tx) >= 0 || isTransfer(state, tx)) return false;
+  // Compared in base currency, so one threshold covers every currency you spend.
+  if (Math.abs(base(tx)) < threshold) return false;
   if (categoryMap(state)[tx.categoryId]?.essential) return false;
   if (isScheduled(state, tx)) return false;
   return state.people.some((p) => !tx.approvals.includes(p.id));
@@ -75,7 +76,7 @@ export interface MoneyDate {
  */
 export function buildMoneyDate(state: AppState, month: string): MoneyDate {
   const money = (c: number) =>
-    formatMoney(c, { currency: state.settings.currency, locale: state.settings.locale });
+    formatMoney(c, { currency: state.settings.baseCurrency, locale: state.settings.locale });
   const cats = categoryMap(state);
   const summary = monthSummary(state, month);
   const previous = monthSummary(state, month.slice(0, 8) === '' ? month : prevMonth(month));
@@ -138,8 +139,8 @@ export function buildMoneyDate(state: AppState, month: string): MoneyDate {
     .map((b) => {
       const actual = sum(
         txInMonth(state, month)
-          .filter((t) => t.categoryId === b.categoryId && t.amount < 0)
-          .map((t) => Math.abs(t.amount)),
+          .filter((t) => t.categoryId === b.categoryId && base(t) < 0)
+          .map((t) => Math.abs(base(t))),
       );
       return { b, actual, over: actual - b.planned };
     })
@@ -173,7 +174,7 @@ export function buildMoneyDate(state: AppState, month: string): MoneyDate {
       title: `${pending.length} purchases still need both of you to sign off`,
       detail: pending
         .slice(0, 3)
-        .map((t) => `${visiblePayee(state, t)} ${money(Math.abs(t.amount))}`)
+        .map((t) => `${visiblePayee(state, t)} ${money(Math.abs(base(t)))}`)
         .join(', '),
     });
   }
@@ -207,8 +208,8 @@ export function buildMoneyDate(state: AppState, month: string): MoneyDate {
     const row = rows.find((r) => r.personId === p.id);
     const personal = sum(
       txInMonth(state, month)
-        .filter((t) => t.amount < 0 && t.splitRule === 'personal' && t.paidBy === p.id)
-        .map((t) => Math.abs(t.amount)),
+        .filter((t) => base(t) < 0 && t.splitRule === 'personal' && t.paidBy === p.id)
+        .map((t) => Math.abs(base(t))),
     );
     return {
       personId: p.id,

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { testAccount, testTransaction } from '../test-utils';
 import { buildTransfer, historyReducer, migrate, reducer, SCHEMA_VERSION, type History } from './store';
 import { demoState, emptyState } from './seed';
 import { accountBalance, expense, income, monthSummary, netWorth, txInMonth } from './selectors';
@@ -7,47 +8,13 @@ import type { AppState, Transaction } from './types';
 const base = (): AppState => ({
   ...emptyState(),
   accounts: [
-    {
-      id: 'chk',
-      name: 'Checking',
-      institution: '',
-      type: 'checking',
-      owner: 'joint',
-      openingBalance: 100000,
-      apr: 0,
-      archived: false,
-    },
-    {
-      id: 'sav',
-      name: 'Savings',
-      institution: '',
-      type: 'savings',
-      owner: 'joint',
-      openingBalance: 500000,
-      apr: 0.04,
-      archived: false,
-    },
+    testAccount({ id: 'chk', openingBalance: 100000 }),
+    testAccount({ id: 'sav', name: 'Savings', type: 'savings', openingBalance: 500000, apr: 0.04 }),
   ],
 });
 
-const tx = (over: Partial<Transaction> = {}): Transaction => ({
-  id: 't1',
-  date: '2026-06-10',
-  amount: -25000,
-  accountId: 'chk',
-  categoryId: 'cat',
-  payee: 'Shop',
-  note: '',
-  paidBy: 'joint',
-  splitRule: 'even',
-  splitShares: {},
-  tags: [],
-  status: 'cleared',
-  comments: [],
-  approvals: [],
-  private: false,
-  ...over,
-});
+const tx = (over: Partial<Transaction> = {}): Transaction =>
+  testTransaction({ id: 't1', amount: -25000, accountId: 'chk', ...over });
 
 describe('derived balances', () => {
   it('is opening plus every transaction on the account', () => {
@@ -74,7 +41,7 @@ describe('transfers', () => {
   };
 
   it('creates two legs that net to zero', () => {
-    const [out, into] = buildTransfer(transferInput);
+    const [out, into] = buildTransfer(base(), transferInput);
     expect(out.amount).toBe(-40000);
     expect(into.amount).toBe(40000);
     expect(out.transferId).toBe(into.transferId);
@@ -196,13 +163,21 @@ describe('demo data', () => {
     const categories = new Set(state.categories.map((c) => c.id));
     expect(state.transactions.every((t) => accounts.has(t.accountId))).toBe(true);
     expect(state.transactions.every((t) => categories.has(t.categoryId))).toBe(true);
-    // Transfer legs come in pairs that cancel out.
+    // Transfer legs cancel out in base currency. They do not cancel natively
+    // when the legs are in different currencies — dollars out, euros in — which
+    // is exactly why every total runs on base amounts.
     const byTransfer = new Map<string, number>();
     for (const t of state.transactions) {
       if (!t.transferId) continue;
-      byTransfer.set(t.transferId, (byTransfer.get(t.transferId) ?? 0) + t.amount);
+      byTransfer.set(t.transferId, (byTransfer.get(t.transferId) ?? 0) + t.baseAmount);
     }
     expect([...byTransfer.values()].every((v) => v === 0)).toBe(true);
+
+    // Every transaction carries a currency and a base amount consistent with it.
+    expect(state.transactions.every((t) => Boolean(t.currency))).toBe(true);
+    expect(
+      state.transactions.every((t) => Math.abs(t.baseAmount - Math.round(t.amount * t.rate)) <= 1),
+    ).toBe(true);
   });
 });
 

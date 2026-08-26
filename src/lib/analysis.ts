@@ -1,6 +1,7 @@
 import type { AppState, ID, Transaction } from '../store/types';
 import {
-  accountBalances,
+  accountBalancesBase,
+  base,
   categoryMap,
   essentialMonthly,
   isTransfer,
@@ -10,7 +11,7 @@ import {
 } from '../store/selectors';
 import { addMonths, currentMonth, dayOfMonth, dayOfWeek, monthRange } from './date';
 import { sum } from './money';
-import { monthlyEquivalent } from './schedule';
+import { monthlyEquivalentBase } from './schedule';
 
 /**
  * Trend comparisons must not include the month in progress: a window ending on
@@ -69,14 +70,14 @@ export interface CostStructure {
 export function costStructure(state: AppState, month: string, months = 3): CostStructure {
   const cats = categoryMap(state);
   const txs = txInMonths(state, monthRange(month, months)).filter(
-    (t) => t.amount < 0 && !isTransfer(state, t),
+    (t) => base(t) < 0 && !isTransfer(state, t),
   );
   const scheduledMonthly = sum(
-    state.scheduled.filter((s) => s.enabled && s.amount < 0).map((s) => Math.abs(monthlyEquivalent(s))),
+    state.scheduled.filter((s) => s.enabled && s.amount < 0).map((s) => Math.abs(monthlyEquivalentBase(state, s))),
   );
-  const essential = sum(txs.filter((t) => cats[t.categoryId]?.essential).map((t) => Math.abs(t.amount))) / months;
+  const essential = sum(txs.filter((t) => cats[t.categoryId]?.essential).map((t) => Math.abs(base(t)))) / months;
   const discretionary =
-    sum(txs.filter((t) => !cats[t.categoryId]?.essential).map((t) => Math.abs(t.amount))) / months;
+    sum(txs.filter((t) => !cats[t.categoryId]?.essential).map((t) => Math.abs(base(t)))) / months;
 
   // The schedule and essential categories overlap; take the larger as fixed.
   const fixed = Math.round(Math.max(essential, scheduledMonthly));
@@ -151,15 +152,15 @@ export function findAnomalies(state: AppState, month: string): Anomaly[] {
   const cats = categoryMap(state);
   const out: Anomaly[] = [];
   const history = monthRange(addMonths(month, -1), 6);
-  const thisMonth = txInMonths(state, [month]).filter((t) => t.amount < 0 && !isTransfer(state, t));
-  const past = txInMonths(state, history).filter((t) => t.amount < 0 && !isTransfer(state, t));
+  const thisMonth = txInMonths(state, [month]).filter((t) => base(t) < 0 && !isTransfer(state, t));
+  const past = txInMonths(state, history).filter((t) => base(t) < 0 && !isTransfer(state, t));
 
   // --- Category spikes, measured against that category's own history.
   const byCategoryMonth = new Map<ID, number[]>();
   for (const m of history) {
     const monthTotals = new Map<ID, number>();
     for (const t of past.filter((x) => x.date.slice(0, 7) === m)) {
-      monthTotals.set(t.categoryId, (monthTotals.get(t.categoryId) ?? 0) + Math.abs(t.amount));
+      monthTotals.set(t.categoryId, (monthTotals.get(t.categoryId) ?? 0) + Math.abs(base(t)));
     }
     for (const cat of state.categories) {
       const list = byCategoryMonth.get(cat.id) ?? [];
@@ -169,7 +170,7 @@ export function findAnomalies(state: AppState, month: string): Anomaly[] {
   }
   const currentByCategory = new Map<ID, number>();
   for (const t of thisMonth) {
-    currentByCategory.set(t.categoryId, (currentByCategory.get(t.categoryId) ?? 0) + Math.abs(t.amount));
+    currentByCategory.set(t.categoryId, (currentByCategory.get(t.categoryId) ?? 0) + Math.abs(base(t)));
   }
   for (const [categoryId, amount] of currentByCategory) {
     const series = byCategoryMonth.get(categoryId) ?? [];
@@ -189,22 +190,22 @@ export function findAnomalies(state: AppState, month: string): Anomaly[] {
   }
 
   // --- Same merchant, same amount, within three days: usually a double charge.
-  const recent = txInMonths(state, monthRange(month, 2)).filter((t) => t.amount < 0);
+  const recent = txInMonths(state, monthRange(month, 2)).filter((t) => base(t) < 0);
   for (let i = 0; i < recent.length; i++) {
     for (let j = i + 1; j < recent.length; j++) {
       const a = recent[i];
       const b = recent[j];
-      if (a.amount !== b.amount) continue;
+      if (a.baseAmount !== b.baseAmount) continue;
       if (a.payee.toLowerCase() !== b.payee.toLowerCase()) continue;
       const gap = Math.abs(Date.parse(a.date) - Date.parse(b.date)) / 86_400_000;
       if (gap > 3) continue;
-      if (Math.abs(a.amount) < 500) continue;
+      if (Math.abs(base(a)) < 500) continue;
       out.push({
         key: `dupe:${a.id}:${b.id}`,
         kind: 'duplicate',
         title: `Possible double charge at ${a.payee}`,
-        detail: `Two identical charges of ${Math.abs(a.amount) / 100} within ${Math.round(gap)} day(s). Worth checking the statement before it ages out of the dispute window.`,
-        amount: Math.abs(a.amount),
+        detail: `Two identical charges of ${(Math.abs(a.amount) / 100).toFixed(2)} ${a.currency} within ${Math.round(gap)} day(s). Worth checking the statement before it ages out of the dispute window.`,
+        amount: Math.abs(base(a)),
         date: b.date,
         severity: 'high',
         transactionIds: [a.id, b.id],
@@ -219,13 +220,13 @@ export function findAnomalies(state: AppState, month: string): Anomaly[] {
     const key = t.payee.toLowerCase();
     if (knownPayees.has(key) || seenThisMonth.has(key)) continue;
     seenThisMonth.add(key);
-    if (Math.abs(t.amount) < 10000) continue;
+    if (Math.abs(base(t)) < 10000) continue;
     out.push({
       key: `new:${t.id}`,
       kind: 'new-merchant',
       title: `First time at ${t.payee}`,
-      detail: `A new merchant taking ${Math.abs(t.amount) / 100}. If this is the start of something recurring, schedule it so the forecast knows.`,
-      amount: Math.abs(t.amount),
+      detail: `A new merchant taking ${(Math.abs(t.amount) / 100).toFixed(2)} ${t.currency}. If this is the start of something recurring, schedule it so the forecast knows.`,
+      amount: Math.abs(base(t)),
       date: t.date,
       severity: 'low',
       transactionIds: [t.id],
@@ -234,15 +235,15 @@ export function findAnomalies(state: AppState, month: string): Anomaly[] {
 
   // --- A small charge from a merchant that then bills full price: a trial ending.
   const byPayee = new Map<string, Transaction[]>();
-  for (const t of txInMonths(state, monthRange(month, 4)).filter((x) => x.amount < 0)) {
+  for (const t of txInMonths(state, monthRange(month, 4)).filter((x) => base(x) < 0)) {
     const key = t.payee.toLowerCase();
     byPayee.set(key, [...(byPayee.get(key) ?? []), t]);
   }
   for (const [, list] of byPayee) {
     if (list.length < 2) continue;
     const sorted = [...list].sort((a, b) => a.date.localeCompare(b.date));
-    const first = Math.abs(sorted[0].amount);
-    const latest = Math.abs(sorted[sorted.length - 1].amount);
+    const first = Math.abs(base(sorted[0]));
+    const latest = Math.abs(base(sorted[sorted.length - 1]));
     if (first > 200 || latest < 500) continue;
     out.push({
       key: `trial:${sorted[sorted.length - 1].id}`,
@@ -283,14 +284,14 @@ export interface SeasonalLump {
 export function seasonalLumps(state: AppState, month: string): SeasonalLump[] {
   const cats = categoryMap(state);
   const txs = txInMonths(state, monthRange(lastCompleteMonth(month), 24)).filter(
-    (t) => t.amount < 0 && !isTransfer(state, t),
+    (t) => base(t) < 0 && !isTransfer(state, t),
   );
   const byCatMonth = new Map<string, number>();
   const byCat = new Map<ID, number[]>();
 
   for (const t of txs) {
     const key = `${t.categoryId}|${t.date.slice(5, 7)}`;
-    byCatMonth.set(key, (byCatMonth.get(key) ?? 0) + Math.abs(t.amount));
+    byCatMonth.set(key, (byCatMonth.get(key) ?? 0) + Math.abs(base(t)));
   }
   for (const [key, total] of byCatMonth) {
     const [categoryId] = key.split('|');
@@ -405,7 +406,7 @@ export interface FreedomMetrics {
  * number of days you will not need to work.
  */
 export function freedomMetrics(state: AppState, month: string): FreedomMetrics {
-  const balances = accountBalances(state);
+  const balances = accountBalancesBase(state);
   const invested = state.accounts
     .filter((a) => !a.archived && (a.type === 'investment' || a.type === 'retirement'))
     .reduce((total, a) => total + (balances[a.id] ?? 0), 0);
@@ -446,12 +447,12 @@ export function netWorthAttribution(state: AppState, month: string, months = 6):
   return monthRange(month, months).map((m) => {
     const txs = txInMonths(state, [m]);
     const saved = sum(
-      txs.filter((t) => t.amount < 0 && isTransfer(state, t)).map((t) => Math.abs(t.amount)),
+      txs.filter((t) => base(t) < 0 && isTransfer(state, t)).map((t) => Math.abs(base(t))),
     );
     const debtPaid = sum(
       txs
-        .filter((t) => t.amount < 0 && cats[t.categoryId]?.group === 'Debt')
-        .map((t) => Math.abs(t.amount)),
+        .filter((t) => base(t) < 0 && cats[t.categoryId]?.group === 'Debt')
+        .map((t) => Math.abs(base(t))),
     );
     const snapshot = state.netWorth.find((s) => s.month === m);
     const previous = state.netWorth.find((s) => s.month === addMonths(m, -1));
@@ -494,8 +495,8 @@ export function basketInflation(state: AppState, month: string, months = 12): Ba
   const half = Math.floor(months / 2);
   const lateMonths = monthRange(anchor, half);
   const earlyMonths = monthRange(addMonths(anchor, -half), months - half);
-  const early = txInMonths(state, earlyMonths).filter((t) => t.amount < 0 && !isTransfer(state, t));
-  const late = txInMonths(state, lateMonths).filter((t) => t.amount < 0 && !isTransfer(state, t));
+  const early = txInMonths(state, earlyMonths).filter((t) => base(t) < 0 && !isTransfer(state, t));
+  const late = txInMonths(state, lateMonths).filter((t) => base(t) < 0 && !isTransfer(state, t));
 
   // Windows can hold different amounts of real history — the ledger may simply
   // not go back far enough — so frequency is measured per active month.
@@ -510,8 +511,8 @@ export function basketInflation(state: AppState, month: string, months = 12): Ba
     const e = early.filter((t) => t.categoryId === cat.id);
     const l = late.filter((t) => t.categoryId === cat.id);
     if (e.length < 5 || l.length < 5) continue;
-    const earlyPerVisit = Math.round(sum(e.map((t) => Math.abs(t.amount))) / e.length);
-    const latePerVisit = Math.round(sum(l.map((t) => Math.abs(t.amount))) / l.length);
+    const earlyPerVisit = Math.round(sum(e.map((t) => Math.abs(base(t)))) / e.length);
+    const latePerVisit = Math.round(sum(l.map((t) => Math.abs(base(t)))) / l.length);
     if (earlyPerVisit === 0) continue;
     const earlyRate = e.length / earlyActive;
     const lateRate = l.length / lateActive;
@@ -545,13 +546,13 @@ export interface Heat {
 /** When money leaves, rather than where it goes. */
 export function spendingHeat(state: AppState, month: string, months = 6): Heat {
   const txs = txInMonths(state, monthRange(month, months)).filter(
-    (t) => t.amount < 0 && !isTransfer(state, t),
+    (t) => base(t) < 0 && !isTransfer(state, t),
   );
   const weekday = new Array(7).fill(0);
   const monthday = new Array(31).fill(0);
   for (const t of txs) {
-    weekday[dayOfWeek(t.date)] += Math.abs(t.amount);
-    monthday[Math.min(30, dayOfMonth(t.date) - 1)] += Math.abs(t.amount);
+    weekday[dayOfWeek(t.date)] += Math.abs(base(t));
+    monthday[Math.min(30, dayOfMonth(t.date) - 1)] += Math.abs(base(t));
   }
   const total = sum(weekday) || 1;
   return {

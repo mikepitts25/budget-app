@@ -2,6 +2,16 @@
 
 export type ID = string;
 
+/** ISO 4217 code, e.g. 'USD' or 'EUR'. */
+export type CurrencyCode = string;
+
+/**
+ * Value of one unit of each foreign currency in the base currency, with the date
+ * the couple last set it. The base currency itself is never stored here — it is
+ * always exactly 1.
+ */
+export type ExchangeRates = Record<CurrencyCode, { rate: number; updated: string }>;
+
 /** A member of the household. Two is the norm, but the model allows more. */
 export interface Person {
   id: ID;
@@ -28,10 +38,12 @@ export interface Account {
   type: AccountType;
   /** 'joint' or a Person id. */
   owner: ID | 'joint';
+  /** The currency this account is denominated in. */
+  currency: CurrencyCode;
   /**
-   * Balance before the first tracked transaction, in cents. The live balance is
-   * derived as openingBalance + the sum of this account's transactions, so the
-   * ledger and the balance can never disagree.
+   * Balance before the first tracked transaction, in this account's own
+   * currency. The live balance is derived as openingBalance + the sum of this
+   * account's transactions, so the ledger and the balance can never disagree.
    */
   openingBalance: number;
   /** Annual interest rate as a decimal (0.0499 = 4.99%). Relevant for credit/loan/savings. */
@@ -86,12 +98,38 @@ export type TxStatus = 'pending' | 'cleared' | 'reconciled';
 /** How the cost of a transaction is shared between partners. */
 export type SplitRule = 'even' | 'income' | 'custom' | 'personal';
 
+/** How a transaction came to have the category it has. */
+export type CategorySource =
+  /** A person chose it. Never overwritten automatically. */
+  | 'manual'
+  /** A rule matched it. */
+  | 'rule'
+  /** Matched a payee the household had already categorized. */
+  | 'learned'
+  /** The import file named a category. */
+  | 'imported'
+  /** Nothing matched, so it landed in the fallback category. */
+  | 'default';
+
 export interface Transaction {
   id: ID;
   /** ISO date, YYYY-MM-DD. */
   date: string;
-  /** Cents. Positive = money in, negative = money out. */
+  /**
+   * Cents in the account's own currency. Positive = money in, negative = out.
+   * This is what the bank actually moved, and it never changes with FX rates.
+   */
   amount: number;
+  /** Denormalized from the account, so a transaction is self-describing. */
+  currency: CurrencyCode;
+  /**
+   * The same amount converted to the household's base currency, fixed at the
+   * time of entry. Every total, budget and report uses this — converting on
+   * read would make last year's reports change when today's rate moves.
+   */
+  baseAmount: number;
+  /** Native-to-base rate used for baseAmount, kept for transparency and audit. */
+  rate: number;
   accountId: ID;
   categoryId: ID;
   payee: string;
@@ -118,6 +156,15 @@ export interface Transaction {
   approvals: ID[];
   /** Visible only to whoever paid, for couples who keep some spending private. */
   private: boolean;
+  /** Where the category came from, so automatic guesses can be reviewed. */
+  categorySource: CategorySource;
+  /** The rule that filed it, when categorySource is 'rule'. */
+  categoryRuleId?: ID;
+  /**
+   * How sure the automatic match was, 0..1. Only meaningful for 'learned':
+   * the share of past transactions from this payee that used this category.
+   */
+  categoryConfidence?: number;
 }
 
 /** A matcher/action pair that files transactions automatically. */
@@ -159,8 +206,10 @@ export type Cadence =
 export interface Scheduled {
   id: ID;
   name: string;
-  /** Signed cents: negative for bills, positive for income. */
+  /** Signed cents in the account's currency: negative for bills, positive for income. */
   amount: number;
+  /** Denormalized from the account it is paid from. */
+  currency: CurrencyCode;
   accountId: ID;
   categoryId: ID;
   cadence: Cadence;
@@ -285,7 +334,8 @@ export interface RetirementPlan {
 
 export interface Settings {
   householdName: string;
-  currency: string;
+  /** Reporting currency. Every total, budget and chart is expressed in it. */
+  baseCurrency: CurrencyCode;
   locale: string;
   /** Default rule applied to new shared transactions. */
   defaultSplit: SplitRule;
@@ -320,6 +370,8 @@ export interface AppState {
   mindMaps: MindMap[];
   rules: Rule[];
   scheduled: Scheduled[];
+  /** Manually maintained FX rates against the base currency. */
+  rates: ExchangeRates;
   retirement: RetirementPlan;
   /** Savings suggestions the couple dismissed, by suggestion key. */
   dismissedSuggestions: string[];

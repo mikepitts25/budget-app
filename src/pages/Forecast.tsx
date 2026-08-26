@@ -3,9 +3,10 @@ import { useApp } from '../store/store';
 import type { Cadence, Scheduled } from '../store/types';
 import { categoryMap } from '../store/selectors';
 import { buildForecast } from '../lib/forecast';
-import { monthlyEquivalent, proposeIncome, proposeSchedules } from '../lib/schedule';
+import { monthlyEquivalentBase, proposeIncome, proposeSchedules } from '../lib/schedule';
+import { formatIn } from '../lib/currency';
 import { dateLabel, daysBetweenDates, todayISO, weekdayLabel } from '../lib/date';
-import { uid } from '../lib/id';
+import { makeScheduled } from '../store/factory';
 import { sum } from '../lib/money';
 import {
   Card,
@@ -36,32 +37,19 @@ export default function Forecast() {
   );
 
   const committedMonthly = sum(
-    state.scheduled.filter((s) => s.enabled && s.amount < 0).map((s) => Math.abs(monthlyEquivalent(s))),
+    state.scheduled
+      .filter((s) => s.enabled && s.amount < 0)
+      .map((s) => Math.abs(monthlyEquivalentBase(state, s))),
   );
   const scheduledIncome = sum(
-    state.scheduled.filter((s) => s.enabled && s.amount > 0).map((s) => monthlyEquivalent(s)),
+    state.scheduled.filter((s) => s.enabled && s.amount > 0).map((s) => monthlyEquivalentBase(state, s)),
   );
 
   const upcoming = forecast.days
     .filter((d) => d.events.length)
     .slice(0, 40);
 
-  const blank = (): Scheduled => ({
-    id: uid('sch'),
-    name: '',
-    amount: 0,
-    accountId: state.accounts[0]?.id ?? '',
-    categoryId:
-      state.categories.find((c) => c.name === 'Miscellaneous' && !c.archived)?.id ??
-      state.categories.find((c) => c.kind === 'expense')?.id ??
-      '',
-    cadence: 'monthly',
-    nextDate: todayISO(),
-    paidBy: 'joint',
-    splitRule: state.settings.defaultSplit,
-    enabled: true,
-    autoDetected: false,
-  });
+  const blank = (): Scheduled => makeScheduled(state);
 
   return (
     <div className="col gap-16">
@@ -102,6 +90,61 @@ export default function Forecast() {
         your own three-month average with the scheduled items removed so nothing is counted twice. Over{' '}
         {horizon} days that is {money(forecast.dailyVariable * Number(horizon))}.
       </div>
+
+      {forecast.byCurrency.length > 1 && (
+        <Card
+          title="Each currency on its own"
+          hint="A healthy total in one currency does not pay a bill in another. These are the balances as they actually sit, before anyone makes a transfer."
+        >
+          <div className="grid cols-2">
+            {forecast.byCurrency.map((c) => (
+              <div
+                key={c.currency}
+                className="card"
+                style={{
+                  boxShadow: 'none',
+                  background: 'var(--surface-2)',
+                  borderColor: c.shortfall ? 'var(--bad)' : undefined,
+                }}
+              >
+                <div className="row">
+                  <span className="bold">{c.currency}</span>
+                  {c.shortfall && <span className="chip bad">runs out</span>}
+                  <span className="spacer" />
+                  <span className="small faint">
+                    {formatIn(c.startingBalance, c.currency, { locale: state.settings.locale })} today
+                  </span>
+                </div>
+                <div className="grid cols-2 mt-16" style={{ gap: 10 }}>
+                  <div>
+                    <div className="tiny faint">Low point</div>
+                    <div className={`num bold ${c.low < 0 ? 'neg' : ''}`}>
+                      {formatIn(c.low, c.currency, { locale: state.settings.locale })}
+                    </div>
+                    <div className="tiny faint">{dateLabel(c.lowDate)}</div>
+                  </div>
+                  <div>
+                    <div className="tiny faint">Out / in over the window</div>
+                    <div className="num small">
+                      −{formatIn(c.outflow, c.currency, { locale: state.settings.locale })}
+                    </div>
+                    <div className="num small pos">
+                      +{formatIn(c.inflow, c.currency, { locale: state.settings.locale })}
+                    </div>
+                  </div>
+                </div>
+                {c.shortfall && (
+                  <div className="callout bad mt-16 small">
+                    {c.currency} goes negative on {dateLabel(c.lowDate)}. Move at least{' '}
+                    {formatIn(Math.abs(c.low), c.currency, { locale: state.settings.locale })} into it
+                    before then.
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {forecast.nextIncomeDate && (
         <div className="callout small">
@@ -173,7 +216,7 @@ export default function Forecast() {
                     <td className="small bold">{p.name}</td>
                     <td className="small faint">{p.cadence}, next {dateLabel(p.nextDate)}</td>
                     <td className={`right num small ${p.amount > 0 ? 'pos' : ''}`}>
-                      {money(p.amount, { sign: true })}
+                      {money(p.amount, { sign: true, currency: p.currency })}
                     </td>
                     <td className="right" style={{ width: 90 }}>
                       <button
@@ -285,7 +328,7 @@ export default function Forecast() {
                     </div>
                     <span className="spacer" />
                     <span className={`small num ${s.amount > 0 ? 'pos' : ''}`}>
-                      {money(s.amount, { sign: true })}
+                      {money(s.amount, { sign: true, currency: s.currency })}
                     </span>
                     <button className="btn ghost sm" onClick={() => setEditing(s)}>
                       ✎
@@ -440,7 +483,7 @@ function ScheduleModal({ item, isNew, onClose }: { item: Scheduled; isNew: boole
         <Field label="Name">
           <input className="input" value={draft.name} onChange={(e) => set('name', e.target.value)} autoFocus />
         </Field>
-        <Field label="Amount">
+        <Field label={`Amount (${draft.currency})`}>
           <div className="row">
             <Segmented
               value={isIncome ? 'in' : 'out'}
@@ -484,11 +527,23 @@ function ScheduleModal({ item, isNew, onClose }: { item: Scheduled; isNew: boole
         </Field>
       </div>
       <div className="field-row">
-        <Field label="Account">
-          <select className="select" value={draft.accountId} onChange={(e) => set('accountId', e.target.value)}>
+        <Field label="Account" hint="Sets the currency this commitment is billed in">
+          <select
+            className="select"
+            value={draft.accountId}
+            onChange={(e) => {
+              const account = state.accounts.find((a) => a.id === e.target.value);
+              setDraft((d) => ({
+                ...d,
+                accountId: e.target.value,
+                currency: account?.currency ?? d.currency,
+              }));
+            }}
+          >
             {state.accounts.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name}
+                {a.currency !== state.settings.baseCurrency ? ` (${a.currency})` : ''}
               </option>
             ))}
           </select>

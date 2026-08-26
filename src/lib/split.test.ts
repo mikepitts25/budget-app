@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { testTransaction } from '../test-utils';
 import type { AppState, Person, Transaction } from '../store/types';
 import { fairness, settle, shareOf } from './split';
 import { emptyState } from '../store/seed';
@@ -9,24 +10,8 @@ const people: Person[] = [
   { id: 'b', name: 'B', color: '#111', annualIncome: 6_000_000 },
 ];
 
-const tx = (over: Partial<Transaction> = {}): Transaction => ({
-  id: 't1',
-  date: '2026-05-10',
-  amount: -10000,
-  accountId: 'acc',
-  categoryId: 'cat',
-  payee: 'Shop',
-  note: '',
-  paidBy: 'a',
-  splitRule: 'even',
-  splitShares: {},
-  tags: [],
-  status: 'cleared',
-  comments: [],
-  approvals: [],
-  private: false,
-  ...over,
-});
+const tx = (over: Partial<Transaction> = {}): Transaction =>
+  testTransaction({ id: 't1', amount: -10000, accountId: 'acc', paidBy: 'a', ...over });
 
 describe('shareOf', () => {
   it('halves an even split', () => {

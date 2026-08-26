@@ -1,28 +1,22 @@
 import { describe, expect, it } from 'vitest';
+import { testTransaction } from '../test-utils';
 import type { Rule, Transaction } from '../store/types';
 import { matches, runRules } from './rules';
 
 const people = [{ id: 'a' }, { id: 'b' }];
 
-let seq = 0;
-const tx = (over: Partial<Transaction> = {}): Transaction => ({
-  id: `t${seq++}`,
-  date: '2026-05-10',
-  amount: -4500,
-  accountId: 'acc1',
-  categoryId: 'unsorted',
-  payee: 'SAFEWAY #1123',
-  note: '',
-  paidBy: 'a',
-  splitRule: 'even',
-  splitShares: {},
-  tags: [],
-  status: 'cleared',
-  comments: [],
-  approvals: [],
-  private: false,
-  ...over,
-});
+// These exercise rule matching, so the subject is a transaction nobody has
+// filed by hand yet. Protection of manual choices is covered in labels.test.ts.
+const tx = (over: Partial<Transaction> = {}): Transaction =>
+  testTransaction({
+    amount: -4500,
+    accountId: 'acc1',
+    categoryId: 'unsorted',
+    payee: 'SAFEWAY #1123',
+    paidBy: 'a',
+    categorySource: 'default',
+    ...over,
+  });
 
 const rule = (over: Partial<Rule> = {}): Rule => ({
   id: 'r1',

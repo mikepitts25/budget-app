@@ -12,6 +12,9 @@ import type {
 import { addMonths, currentMonth, daysInMonth, todayISO } from '../lib/date';
 import { uid } from '../lib/id';
 
+/** Euros per dollar for the demo household. Realistic, not live. */
+const EUR_RATE = 1.08;
+
 /** Deterministic PRNG so the demo household looks the same on every load. */
 function rng(seed: number) {
   let s = seed >>> 0;
@@ -66,7 +69,7 @@ export function emptyState(): AppState {
     version: 1,
     settings: {
       householdName: 'Our Household',
-      currency: 'USD',
+      baseCurrency: 'USD',
       locale: 'en-US',
       defaultSplit: 'even',
       savingsRateTarget: 0.2,
@@ -88,6 +91,7 @@ export function emptyState(): AppState {
     mindMaps: [starterMindMap()],
     rules: [],
     scheduled: [],
+    rates: {},
     retirement: {
       currentAge: { [alex.id]: 34, [jordan.id]: 33 },
       retireAge: { [alex.id]: 62, [jordan.id]: 62 },
@@ -130,17 +134,20 @@ export function starterMindMap(): MindMap {
 interface Rule {
   category: string;
   payee: string | string[];
+  /** In the paying account's own currency. */
   amount: [number, number];
   /** Times per month. Fractional means "sometimes". */
   perMonth: number;
   day?: number;
   paidBy?: 'a' | 'b' | 'joint';
   split?: 'even' | 'income' | 'personal';
+  /** Forces the paying account, for costs that are always in euros. */
+  account?: 'euro';
 }
 
 const RULES: Rule[] = [
-  { category: 'Rent / Mortgage', payee: 'Willow Creek Apartments', amount: [268000, 268000], perMonth: 1, day: 1, paidBy: 'joint' },
-  { category: 'Utilities', payee: ['City Power & Light', 'Metro Water'], amount: [9000, 21000], perMonth: 2, paidBy: 'joint' },
+  { category: 'Rent / Mortgage', payee: 'Calle Mayor Arrendamientos', amount: [245000, 245000], perMonth: 1, day: 3, paidBy: 'joint', account: 'euro' },
+  { category: 'Utilities', payee: ['Iberdrola Energía', 'Aguas Municipales'], amount: [7000, 17000], perMonth: 2, paidBy: 'joint', account: 'euro' },
   { category: 'Internet & Phone', payee: ['Fiberline Internet', 'Cellcom Wireless'], amount: [6500, 14500], perMonth: 2, paidBy: 'joint' },
   { category: 'Groceries', payee: ['Green Grocer', 'SuperMart', 'Corner Market'], amount: [4200, 18500], perMonth: 6, paidBy: 'joint' },
   { category: 'Restaurants', payee: ['Tavola', 'Noodle Bar', 'Blue Fig Cafe', 'Taqueria Sol', 'Pizza Nova'], amount: [2400, 11800], perMonth: 7 },
@@ -180,24 +187,28 @@ export function demoState(): AppState {
   ];
 
   const targetBalances: Record<string, number> = {};
+  // The demo household is paid in dollars and pays rent in euros, which is the
+  // case multi-currency support exists for.
   const accounts: Account[] = [
-    { id: uid('ac'), name: 'Joint Checking', institution: 'Harbor Bank', type: 'checking', owner: 'joint', openingBalance: 942000, apr: 0.0005, archived: false },
-    { id: uid('ac'), name: 'Emergency Fund', institution: 'Harbor Bank', type: 'savings', owner: 'joint', openingBalance: 1180000, apr: 0.041, archived: false },
-    { id: uid('ac'), name: 'House Fund', institution: 'Harbor Bank', type: 'savings', owner: 'joint', openingBalance: 3640000, apr: 0.042, archived: false },
-    { id: uid('ac'), name: "Alex's Checking", institution: 'Northline', type: 'checking', owner: people[0].id, openingBalance: 318000, apr: 0, archived: false },
-    { id: uid('ac'), name: "Jordan's Checking", institution: 'Northline', type: 'checking', owner: people[1].id, openingBalance: 264000, apr: 0, archived: false },
-    { id: uid('ac'), name: 'Sapphire Card', institution: 'Northline', type: 'credit', owner: 'joint', openingBalance: 412000, apr: 0.2274, archived: false },
-    { id: uid('ac'), name: 'Brokerage', institution: 'Vantage', type: 'investment', owner: 'joint', openingBalance: 4820000, apr: 0, archived: false },
-    { id: uid('ac'), name: "Alex's 401(k)", institution: 'Vantage', type: 'retirement', owner: people[0].id, openingBalance: 14250000, apr: 0, archived: false },
-    { id: uid('ac'), name: "Jordan's 403(b)", institution: 'Vantage', type: 'retirement', owner: people[1].id, openingBalance: 9180000, apr: 0, archived: false },
+    { id: uid('ac'), name: 'Joint Checking', institution: 'Harbor Bank', type: 'checking', owner: 'joint', currency: 'USD', openingBalance: 942000, apr: 0.0005, archived: false },
+    { id: uid('ac'), name: 'Euro Account', institution: 'Banco Ibérico', type: 'checking', owner: 'joint', currency: 'EUR', openingBalance: 310000, apr: 0, archived: false },
+    { id: uid('ac'), name: 'Emergency Fund', institution: 'Harbor Bank', type: 'savings', owner: 'joint', currency: 'USD', openingBalance: 1180000, apr: 0.041, archived: false },
+    { id: uid('ac'), name: 'House Fund', institution: 'Harbor Bank', type: 'savings', owner: 'joint', currency: 'USD', openingBalance: 3640000, apr: 0.042, archived: false },
+    { id: uid('ac'), name: "Alex's Checking", institution: 'Northline', type: 'checking', owner: people[0].id, currency: 'USD', openingBalance: 318000, apr: 0, archived: false },
+    { id: uid('ac'), name: "Jordan's Checking", institution: 'Northline', type: 'checking', owner: people[1].id, currency: 'USD', openingBalance: 264000, apr: 0, archived: false },
+    { id: uid('ac'), name: 'Sapphire Card', institution: 'Northline', type: 'credit', owner: 'joint', currency: 'USD', openingBalance: 412000, apr: 0.2274, archived: false },
+    { id: uid('ac'), name: 'Brokerage', institution: 'Vantage', type: 'investment', owner: 'joint', currency: 'USD', openingBalance: 4820000, apr: 0, archived: false },
+    { id: uid('ac'), name: "Alex's 401(k)", institution: 'Vantage', type: 'retirement', owner: people[0].id, currency: 'USD', openingBalance: 14250000, apr: 0, archived: false },
+    { id: uid('ac'), name: "Jordan's 403(b)", institution: 'Vantage', type: 'retirement', owner: people[1].id, currency: 'USD', openingBalance: 9180000, apr: 0, archived: false },
   ];
   const joint = accounts[0];
-  const emergencyFund = accounts[1];
-  const houseFund = accounts[2];
-  const alexAcc = accounts[3];
-  const jordanAcc = accounts[4];
-  const card = accounts[5];
-  const brokerage = accounts[6];
+  const euro = accounts[1];
+  const emergencyFund = accounts[2];
+  const houseFund = accounts[3];
+  const alexAcc = accounts[4];
+  const jordanAcc = accounts[5];
+  const card = accounts[6];
+  const brokerage = accounts[7];
   for (const a of accounts) targetBalances[a.id] = a.openingBalance;
 
   const debts: Debt[] = [
@@ -213,10 +224,15 @@ export function demoState(): AppState {
 
   const pick = <T,>(xs: T[]): T => xs[Math.floor(rand() * xs.length)];
   const between = (lo: number, hi: number) => Math.round(lo + rand() * (hi - lo));
+  const currencyOf = (accountId: string) =>
+    accounts.find((a) => a.id === accountId)?.currency ?? 'USD';
+
   const push = (
     t: Partial<Transaction> & Pick<Transaction, 'date' | 'amount' | 'accountId' | 'categoryId' | 'payee'>,
   ) => {
     if (t.date > today) return;
+    const currency = t.currency ?? currencyOf(t.accountId);
+    const rate = t.rate ?? (currency === 'USD' ? 1 : EUR_RATE);
     transactions.push({
       id: uid('tx'),
       note: '',
@@ -228,11 +244,19 @@ export function demoState(): AppState {
       comments: [],
       approvals: [],
       private: false,
+      categorySource: 'manual',
       ...t,
+      currency,
+      rate,
+      baseAmount: t.baseAmount ?? Math.round(t.amount * rate),
     } as Transaction);
   };
 
-  /** Two legs, one id: money leaving one of your accounts and landing in another. */
+  /**
+   * Two legs, one id. Across currencies the legs have different native amounts —
+   * dollars leave, euros arrive — but represent the same money, so the receiving
+   * leg's base amount is pinned to the sending leg's rather than recomputed.
+   */
   const pushTransfer = (
     date: string,
     amount: number,
@@ -243,8 +267,24 @@ export function demoState(): AppState {
   ) => {
     if (date > today) return;
     const transferId = uid('tr');
+    const fromCurrency = currencyOf(fromId);
+    const toCurrency = currencyOf(toId);
+    const fromRate = fromCurrency === 'USD' ? 1 : EUR_RATE;
+    const toRate = toCurrency === 'USD' ? 1 : EUR_RATE;
+    const baseValue = Math.round(amount * fromRate);
+    const received = Math.round(baseValue / toRate);
+
     push({ date, amount: -amount, accountId: fromId, categoryId, payee, transferId, splitRule: 'income' });
-    push({ date, amount, accountId: toId, categoryId, payee, transferId, splitRule: 'income' });
+    push({
+      date,
+      amount: received,
+      accountId: toId,
+      categoryId,
+      payee,
+      transferId,
+      splitRule: 'income',
+      baseAmount: baseValue,
+    });
   };
 
   months.forEach((month, monthIndex) => {
@@ -266,6 +306,8 @@ export function demoState(): AppState {
     pushTransfer(day(2), 95000, joint.id, houseFund.id, 'Transfer to House Fund', catId('Savings transfer'));
     pushTransfer(day(2), 30000, joint.id, emergencyFund.id, 'Transfer to Emergency Fund', catId('Savings transfer'));
     pushTransfer(day(6), 60000, joint.id, brokerage.id, 'Vantage Brokerage', catId('Investments'));
+    // Dollars in, euros out: the rent has to be funded before it is due.
+    pushTransfer(day(1), 300000, joint.id, euro.id, 'Wise transfer to Euro Account', catId('Savings transfer'));
     // Debt service.
     push({ date: day(17), amount: -24800, accountId: alexAcc.id, categoryId: catId('Debt payments'), payee: 'Crestline Student Loans', note: '', paidBy: people[0].id, splitRule: 'personal' });
     push({ date: day(21), amount: -between(15000, 42000), accountId: joint.id, categoryId: catId('Debt payments'), payee: 'Sapphire Card Payment', note: '', paidBy: 'joint', splitRule: 'income' });
@@ -289,7 +331,15 @@ export function demoState(): AppState {
                   ? people[0].id
                   : people[1].id;
         const account =
-          payer === 'joint' ? (rand() < 0.75 ? joint.id : card.id) : payer === people[0].id ? alexAcc.id : jordanAcc.id;
+          rule.account === 'euro'
+            ? euro.id
+            : payer === 'joint'
+              ? rand() < 0.75
+                ? joint.id
+                : card.id
+              : payer === people[0].id
+                ? alexAcc.id
+                : jordanAcc.id;
         push({
           date: day(d),
           amount: -Math.round(between(rule.amount[0], rule.amount[1]) * drift),
@@ -307,6 +357,38 @@ export function demoState(): AppState {
     if (monthIndex === 4) push({ date: day(9), amount: -184000, accountId: card.id, categoryId: catId('Travel'), payee: 'Skyline Airways', note: 'Weekend trip', paidBy: 'joint', splitRule: 'even' });
     if (monthIndex === 7) push({ date: day(16), amount: -96000, accountId: joint.id, categoryId: catId('Home maintenance'), payee: 'Ace Plumbing', note: 'Water heater', paidBy: 'joint', splitRule: 'income' });
   });
+
+  // A real ledger is a mixture: payees seen many times were learned confidently,
+  // one-offs fell through to the fallback category and are worth a look, and a
+  // few were filed by hand. Marking everything 'manual' would leave the review
+  // queue permanently empty and misreport how the categories got there.
+  const payeeCounts = new Map<string, number>();
+  for (const t of transactions) {
+    const key = t.payee.toLowerCase();
+    payeeCounts.set(key, (payeeCounts.get(key) ?? 0) + 1);
+  }
+  for (const t of transactions) {
+    if (t.transferId) continue;
+    const seen = payeeCounts.get(t.payee.toLowerCase()) ?? 1;
+    if (seen >= 6) {
+      t.categorySource = 'learned';
+      t.categoryConfidence = 0.94;
+    } else if (seen >= 3) {
+      t.categorySource = 'learned';
+      t.categoryConfidence = 0.7;
+    } else {
+      t.categorySource = 'default';
+      t.categoryConfidence = undefined;
+    }
+  }
+  // Rent, salary and the loan payment are the ones anybody would have set
+  // themselves.
+  for (const t of transactions) {
+    if (/Arrendamientos|Payroll|School District|Student Loans/i.test(t.payee)) {
+      t.categorySource = 'manual';
+      t.categoryConfidence = undefined;
+    }
+  }
 
   transactions.sort((x, y) => y.date.localeCompare(x.date));
 
@@ -355,6 +437,7 @@ export function demoState(): AppState {
       onboarded: true,
       activePersonId: people[0].id,
     },
+    rates: { EUR: { rate: EUR_RATE, updated: todayISO() } },
     people,
     accounts,
     transactions,

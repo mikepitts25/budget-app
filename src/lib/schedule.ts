@@ -66,7 +66,20 @@ export const allOccurrences = (items: Scheduled[], from: string, to: string): Oc
     .flatMap((i) => occurrencesBetween(i, from, to))
     .sort((a, b) => a.date.localeCompare(b.date));
 
-/** Normalized monthly cost of a schedule, for committed-spending totals. */
+/**
+ * The same figure converted to base currency. Any total that adds several
+ * schedules together must use this — a euro rent and a dollar gym membership
+ * cannot be summed in their own units.
+ */
+export const monthlyEquivalentBase = (state: AppState, item: Scheduled): number => {
+  const rate =
+    item.currency === state.settings.baseCurrency
+      ? 1
+      : (state.rates?.[item.currency]?.rate ?? 1);
+  return Math.round(monthlyEquivalent(item) * rate);
+};
+
+/** Normalized monthly cost of a schedule, in its own currency. */
 export const monthlyEquivalent = (item: Scheduled): number => {
   const perMonth: Record<Cadence, number> = {
     weekly: 52 / 12,
@@ -111,6 +124,7 @@ export function proposeSchedules(state: AppState, month: string): Scheduled[] {
         id: uid('sch'),
         name: s.payee,
         amount: -s.typicalAmount,
+        currency: last.currency,
         accountId: last.accountId,
         categoryId: s.categoryId,
         cadence: CADENCE_FROM_SERIES[s.cadence],
@@ -142,6 +156,7 @@ export function proposeIncome(state: AppState, month: string): Scheduled[] {
         id: uid('sch'),
         name: s.payee,
         amount: s.typicalAmount,
+        currency: last.currency,
         accountId: last.accountId,
         categoryId: last.categoryId,
         cadence: CADENCE_FROM_SERIES[s.cadence],

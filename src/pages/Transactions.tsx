@@ -4,12 +4,16 @@ import type { ID, SplitRule, Transaction, TxStatus } from '../store/types';
 import { categoryMap, txInMonth } from '../store/selectors';
 import { dateLabel, monthLabel, todayISO } from '../lib/date';
 import { uid } from '../lib/id';
+import { makeTransaction, withBase } from '../store/factory';
 import { guessColumns, parseCSV, rowsToTransactions, transactionsToCSV, type ColumnMap } from '../lib/csv';
 import { ingest, ofxSource } from '../lib/sources';
 import { shareOf } from '../lib/split';
 import { categorizeIncoming, ruleFromTransaction } from '../lib/rules';
 import { activePerson, needsApproval, visiblePayee } from '../lib/couples';
+import { isMultiCurrency } from '../lib/currency';
 import { RuleModal } from '../components/RulesManager';
+import LabelReview from '../components/LabelReview';
+import { explainLabel, isAutomatic } from '../lib/labels';
 import { Card, ConfirmButton, Empty, Field, Modal, MoneyInput, Segmented, useToast } from '../components/ui';
 import { canSeeDetail as canSee } from '../lib/couples';
 
@@ -38,6 +42,7 @@ export default function Transactions() {
   const [categoryFilter, setCategoryFilter] = useState<ID | 'all'>('all');
   const [personFilter, setPersonFilter] = useState<ID | 'all' | 'joint'>('all');
   const [statusFilter, setStatusFilter] = useState<TxStatus | 'all'>('all');
+  const [autoOnly, setAutoOnly] = useState(false);
   const [scope, setScope] = useState<'month' | 'all'>('month');
   const [selected, setSelected] = useState<Set<ID>>(new Set());
   const [editing, setEditing] = useState<Transaction | null>(null);
@@ -52,6 +57,7 @@ export default function Transactions() {
       if (categoryFilter !== 'all' && t.categoryId !== categoryFilter) return false;
       if (personFilter !== 'all' && t.paidBy !== personFilter) return false;
       if (statusFilter !== 'all' && t.status !== statusFilter) return false;
+      if (autoOnly && !isAutomatic(t)) return false;
       if (!q) return true;
       return (
         t.payee.toLowerCase().includes(q) ||
@@ -60,11 +66,12 @@ export default function Transactions() {
         t.tags.some((tag) => tag.includes(q))
       );
     });
-  }, [base, query, filter, categoryFilter, personFilter, statusFilter, cats]);
+  }, [base, query, filter, categoryFilter, personFilter, statusFilter, autoOnly, cats]);
 
+  // Totals must use base amounts: adding dollars to euros would be nonsense.
   const real = rows.filter((t) => !t.transferId);
-  const inflow = real.filter((t) => t.amount > 0).reduce((a, t) => a + t.amount, 0);
-  const outflow = real.filter((t) => t.amount < 0).reduce((a, t) => a + Math.abs(t.amount), 0);
+  const inflow = real.filter((t) => t.baseAmount > 0).reduce((a, t) => a + t.baseAmount, 0);
+  const outflow = real.filter((t) => t.baseAmount < 0).reduce((a, t) => a + Math.abs(t.baseAmount), 0);
   const transferCount = rows.length - real.length;
 
   const toggle = (id: ID) => {
@@ -84,32 +91,25 @@ export default function Transactions() {
     toast(`Exported ${rows.length} transactions`);
   };
 
-  const blank = (): Transaction => ({
-    id: uid('tx'),
-    date: todayISO(),
-    amount: 0,
-    accountId: state.accounts[0]?.id ?? '',
-    // Defaulting to the first expense category makes every new entry rent, which
-    // is both wrong and quietly exempt from the big-purchase check-in.
-    categoryId:
-      state.categories.find((c) => c.name === 'Miscellaneous' && !c.archived)?.id ??
-      state.categories.find((c) => c.kind === 'expense' && !c.essential && !c.archived)?.id ??
-      state.categories.find((c) => c.kind === 'expense')?.id ??
-      '',
-    payee: '',
-    note: '',
-    paidBy: 'joint',
-    splitRule: state.settings.defaultSplit,
-    splitShares: {},
-    tags: [],
-    status: 'cleared',
-    comments: [],
-    approvals: [],
-    private: false,
-  });
+  const blank = (): Transaction =>
+    makeTransaction(state, {
+      date: todayISO(),
+      amount: 0,
+      accountId: state.accounts[0]?.id ?? '',
+      // Defaulting to the first expense category makes every new entry rent,
+      // which is both wrong and quietly exempt from the big-purchase check-in.
+      categoryId:
+        state.categories.find((c) => c.name === 'Miscellaneous' && !c.archived)?.id ??
+        state.categories.find((c) => c.kind === 'expense' && !c.essential && !c.archived)?.id ??
+        state.categories.find((c) => c.kind === 'expense')?.id ??
+        '',
+      payee: '',
+    });
 
   return (
     <div className="col gap-16">
+      <LabelReview />
+
       {rows.some((t) => needsApproval(state, t)) && (
         <Card
           title="Waiting on both of you"
@@ -198,6 +198,14 @@ export default function Transactions() {
               </option>
             ))}
           </select>
+          <label className="tiny faint row gap-4" title="Only transactions the app categorized for you">
+            <input
+              type="checkbox"
+              checked={autoOnly}
+              onChange={(e) => setAutoOnly(e.target.checked)}
+            />
+            auto-filed only
+          </label>
           <select
             className="select"
             style={{ maxWidth: 150 }}
@@ -232,6 +240,9 @@ export default function Transactions() {
           <span className={`num bold ${inflow - outflow >= 0 ? 'pos' : 'neg'}`}>
             net {money(inflow - outflow)}
           </span>
+          {isMultiCurrency(state) && (
+            <span className="chip">totals in {state.settings.baseCurrency}</span>
+          )}
           {transferCount > 0 && (
             <span className="chip">{transferCount} transfer legs excluded from totals</span>
           )}
@@ -349,6 +360,15 @@ export default function Transactions() {
                       </td>
                       <td className="small">
                         {cats[t.categoryId]?.icon} {cats[t.categoryId]?.name ?? '—'}
+                        {isAutomatic(t) && (
+                          <span
+                            className="chip"
+                            style={{ marginLeft: 6 }}
+                            title={`${explainLabel(state, t).label}. ${explainLabel(state, t).detail}`}
+                          >
+                            auto
+                          </span>
+                        )}
                       </td>
                       <td className="small">
                         {person ? (
@@ -373,7 +393,12 @@ export default function Transactions() {
                         )}
                       </td>
                       <td className={`right num ${t.amount >= 0 ? 'pos' : ''}`}>
-                        {money(t.amount, { sign: true })}
+                        {money(t.amount, { sign: true, currency: t.currency })}
+                        {t.currency !== state.settings.baseCurrency && (
+                          <div className="tiny faint">
+                            = {money(t.baseAmount, { sign: true })}
+                          </div>
+                        )}
                       </td>
                     </tr>
                   );
@@ -499,11 +524,16 @@ function TransactionModal({
       </div>
 
       <div className="field-row">
-        <Field label="Amount" hint={isIncome ? 'Money coming in' : 'Money going out'}>
+        <Field
+          label={`Amount${draft.currency !== state.settings.baseCurrency ? ` (${draft.currency})` : ''}`}
+          hint={isIncome ? 'Money coming in' : 'Money going out'}
+        >
           <div className="row">
             <Segmented
               value={isIncome ? 'in' : 'out'}
-              onChange={(v) => set('amount', v === 'in' ? Math.abs(draft.amount) : -Math.abs(draft.amount))}
+              onChange={(v) =>
+                setDraft((d) => withBase(d, v === 'in' ? Math.abs(d.amount) : -Math.abs(d.amount)))
+              }
               options={[
                 { value: 'out', label: '−' },
                 { value: 'in', label: '+' },
@@ -511,15 +541,28 @@ function TransactionModal({
             />
             <MoneyInput
               value={Math.abs(draft.amount)}
-              onChange={(c) => set('amount', isIncome ? c : -c)}
+              onChange={(c) => setDraft((d) => withBase(d, isIncome ? c : -c))}
             />
           </div>
         </Field>
-        <Field label="Category">
+        <Field
+          label="Category"
+          hint={isAutomatic(draft) ? explainLabel(state, draft).label : undefined}
+        >
           <select
             className="select"
             value={draft.categoryId}
-            onChange={(e) => set('categoryId', e.target.value)}
+            onChange={(e) =>
+              // Choosing by hand is a decision, and decisions are never
+              // overwritten by rules later.
+              setDraft((d) => ({
+                ...d,
+                categoryId: e.target.value,
+                categorySource: 'manual',
+                categoryRuleId: undefined,
+                categoryConfidence: undefined,
+              }))
+            }
           >
             {state.categories
               .filter((c) => !c.archived)
@@ -532,12 +575,49 @@ function TransactionModal({
         </Field>
       </div>
 
+      {draft.currency !== state.settings.baseCurrency && (
+        <div className="field-row">
+          <Field
+            label={`Rate used (1 ${draft.currency} in ${state.settings.baseCurrency})`}
+            hint="Fixed at the time of the transaction, so old reports do not move"
+          >
+            <input
+              className="input num"
+              type="number"
+              step="0.0001"
+              value={draft.rate}
+              onChange={(e) =>
+                setDraft((d) => withBase(d, d.amount, Number(e.target.value) || d.rate))
+              }
+            />
+          </Field>
+          <Field label={`Counts as (${state.settings.baseCurrency})`}>
+            <div className="input num" style={{ display: 'flex', alignItems: 'center' }}>
+              {money(draft.baseAmount, { sign: true })}
+            </div>
+          </Field>
+        </div>
+      )}
+
       <div className="field-row">
         <Field label="Account">
-          <select className="select" value={draft.accountId} onChange={(e) => set('accountId', e.target.value)}>
+          <select
+            className="select"
+            value={draft.accountId}
+            onChange={(e) => {
+              // The account decides the currency, and changing it re-rates the
+              // amount rather than silently re-denominating it.
+              const account = state.accounts.find((a) => a.id === e.target.value);
+              const currency = account?.currency ?? state.settings.baseCurrency;
+              const rate =
+                currency === state.settings.baseCurrency ? 1 : (state.rates[currency]?.rate ?? 1);
+              setDraft((d) => withBase({ ...d, accountId: e.target.value, currency }, d.amount, rate));
+            }}
+          >
             {state.accounts.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name}
+                {a.currency !== state.settings.baseCurrency ? ` (${a.currency})` : ''}
               </option>
             ))}
           </select>
@@ -785,6 +865,7 @@ function ImportModal({ onClose }: { onClose: () => void }) {
     if (!rows.length) return null;
     return {
       ...rowsToTransactions(rows, map, {
+        state,
         account,
         categories: state.categories,
         existing: state.transactions,

@@ -12,7 +12,7 @@ connection: your financial history stays on your machine.
 ```bash
 npm install
 npm run dev      # http://localhost:5173
-npm test         # 154 tests over the domain logic
+npm test         # 195 tests over the domain logic
 ```
 
 It installs as an app (service worker + manifest) and works fully offline —
@@ -39,6 +39,14 @@ ledger.
   description into a readable payee. The editor previews exactly which existing
   transactions a rule would touch before you save it, and any transaction can
   seed a rule in one click.
+- **Correcting what the app guessed.** Every transaction records *how* it got its
+  category — which rule, or which payee it matched and how consistently, or that
+  nothing matched at all. Auto-filed rows are badged and explain themselves; a
+  review queue surfaces the least certain first; and correcting one transaction
+  fixes every other auto-filed transaction from the same payee. Categories you
+  set by hand are decisions: rules never overwrite them unless you explicitly
+  ask, and a hand-set category counts for four times as much when the app is
+  learning what a payee usually means.
 - **Accounts, transfers and reconciliation** — balances are *derived* (opening
   balance plus every transaction), so the ledger and the balance can never
   disagree. Transfers are two mirrored legs that net to zero and are excluded
@@ -151,8 +159,10 @@ also shows what the freed-up money becomes if it is invested instead of spent.
 
 No black boxes — the same notes are in the app, at the bottom of Settings.
 
-- **Money** is stored as whole cents. Splits use largest-remainder allocation, so a
-  three-way split of a penny still adds up.
+- **Money** is stored in minor units (cents). Splits use largest-remainder
+  allocation, so a three-way split of a penny still adds up. Every *aggregate*
+  runs on base-currency amounts; native amounts are only ever used to display a
+  single transaction or one account's balance.
 - **Splitting.** Even splits halve shared costs; income splits divide them in
   proportion to gross income. Joint-account spending is treated as funded by both
   partners in that same proportion. Settlements match the largest debtor to the
@@ -207,19 +217,22 @@ src/
     schedule.ts    cadences, occurrences, auto-proposed commitments
     rules.ts       matching and applying filing rules
     couples.ts     privacy, sign-offs, the money date report
+    currency.ts    conversion, formatting, rate staleness
+    labels.ts      provenance of automatic categories, review queue
     csv.ts         import parsing, column guessing, payee learning
     ofx.ts         OFX / QFX / QIF parsing
     sources.ts     provider-agnostic ingestion (files today, banks later)
-  store/         types, reducer + undo history, migrations, selectors, demo data
+  store/         types, reducer + undo history, migrations, selectors, factories, demo data
   components/    UI primitives and hand-rolled SVG charts (no chart library)
   pages/         one file per screen
 ```
 
 `src/lib` is pure TypeScript with no React import anywhere, which is why it can
-be tested directly — 154 tests covering allocation, splits and settlement,
+be tested directly — 195 tests covering allocation, splits and settlement,
 recurrence detection, debt strategies, projections, forecast cadences, rules
-precedence, OFX/QIF parsing, statistics, Monte Carlo properties, and the reducer
-including its v1→v2 migration.
+precedence, OFX/QIF parsing, statistics, Monte Carlo properties, currency
+conversion and base-currency switching, category provenance, and the reducer
+including its v1→v2→v3 migrations.
 
 Built with React, TypeScript and Vite. The only runtime dependencies are React
 and React DOM — the charts, the mind-map canvas and the CSV parser are all local
@@ -233,6 +246,31 @@ npm test           # run the suite
 npm run test:watch # watch mode
 npm run preview    # serve the production build
 ```
+
+## Two currencies at once
+
+Built for being paid in one currency and paying rent in another.
+
+- Each **account** has a currency. Each **transaction** stores what the bank
+  actually moved, the same amount in your base currency, and the rate used.
+- The converted figure is **frozen at entry time**, so last year's reports do not
+  change when today's rate moves. Balances you still hold *do* revalue at today's
+  rate, because that is what they are worth now.
+- **Transfers work across currencies** — dollars out, euros in — sharing one base
+  value, so a transfer can never appear to create or destroy money. Enter the
+  amount actually received and the provider's spread shows up as a worse rate
+  rather than money vanishing.
+- **The forecast runs per currency as well as combined.** This is the point: the
+  demo household's blended forecast looks healthy — a $2,937 low point, $10.3K
+  safe to spend — while its euro account goes negative on October 3rd and needs
+  €2,192 moved in first. A single blended number hides exactly the problem a
+  cross-border household has.
+- **Rates are entered by hand.** There is no backend, and a rate pulled from a
+  public endpoint would be neither auditable nor available offline. Each rate
+  shows when it was last set and is flagged after a month.
+- **Changing your base currency** re-expresses the whole history — transactions,
+  budgets, goals, debts, net worth, retirement — so past months keep their
+  meaning instead of jumping by the exchange rate.
 
 ## Connecting your banks
 

@@ -9,7 +9,7 @@
  */
 
 import type { Account, AppState, ID, Transaction } from '../store/types';
-import { uid } from './id';
+import { makeTransaction } from '../store/factory';
 import { learnPayeeCategories, matchCategory } from './csv';
 import { parseStatement } from './ofx';
 import { categorizeIncoming } from './rules';
@@ -172,24 +172,23 @@ export function ingest(
     if (row.externalId) byExternal.add(row.externalId);
     bySignature.add(signature);
 
-    out.push({
-      id: uid('tx'),
-      date: row.date,
-      amount: row.amount,
-      accountId: ctx.account.id,
-      categoryId: matchCategory(row.payee, learned) ?? ctx.defaultCategoryId,
-      payee: row.payee || 'Unknown',
-      note: row.memo ?? '',
-      paidBy: ctx.paidBy,
-      splitRule: state.settings.defaultSplit,
-      splitShares: {},
-      tags: ['imported'],
-      status: row.pending ? 'pending' : 'cleared',
-      externalId: row.externalId,
-      comments: [],
-      approvals: [],
-      private: false,
-    });
+    const learnedMatch = matchCategory(row.payee, learned);
+    out.push(
+      makeTransaction(state, {
+        date: row.date,
+        amount: row.amount,
+        accountId: ctx.account.id,
+        categoryId: learnedMatch?.categoryId ?? ctx.defaultCategoryId,
+        payee: row.payee || 'Unknown',
+        note: row.memo ?? '',
+        paidBy: ctx.paidBy,
+        tags: ['imported'],
+        status: row.pending ? 'pending' : 'cleared',
+        externalId: row.externalId,
+        categorySource: learnedMatch ? 'learned' : 'default',
+        categoryConfidence: learnedMatch?.confidence,
+      }),
+    );
   }
 
   // Rules get the final say, exactly as they do for anything typed in by hand.
