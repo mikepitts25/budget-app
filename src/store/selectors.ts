@@ -1,6 +1,13 @@
-import type { AppState, Category, ID, Transaction } from './types';
+import type { AppState, Category, CurrencyCode, ID, Transaction } from './types';
 import { addMonths, monthOf, monthRange } from '../lib/date';
 import { sum } from '../lib/money';
+
+/**
+ * Every aggregate in the app runs on base-currency amounts. Native amounts are
+ * for displaying a single transaction or an account balance; the moment two
+ * numbers are added together they must be in the same currency.
+ */
+export const base = (t: Transaction): number => t.baseAmount ?? t.amount;
 
 export const byId = <T extends { id: ID }>(xs: T[]): Record<ID, T> =>
   Object.fromEntries(xs.map((x) => [x.id, x]));
@@ -16,11 +23,7 @@ export const txInMonths = (state: AppState, months: string[]): Transaction[] => 
 };
 
 export const income = (txs: Transaction[], state?: AppState): number =>
-  sum(
-    txs
-      .filter((t) => t.amount > 0 && !(state && isTransfer(state, t)))
-      .map((t) => t.amount),
-  );
+  sum(txs.filter((t) => base(t) > 0 && !(state && isTransfer(state, t))).map(base));
 
 /**
  * Money moved between your own accounts, or into savings and investments, is not
@@ -32,11 +35,11 @@ export const isTransfer = (state: AppState, tx: Transaction): boolean =>
 
 /** Outflow that was actually consumed: excludes transfers between your accounts. */
 export const expense = (state: AppState, txs: Transaction[]): number =>
-  Math.abs(sum(txs.filter((t) => t.amount < 0 && !isTransfer(state, t)).map((t) => t.amount)));
+  Math.abs(sum(txs.filter((t) => base(t) < 0 && !isTransfer(state, t)).map(base)));
 
 /** Outflow that went into savings, investments or goal funding. */
 export const transfers = (state: AppState, txs: Transaction[]): number =>
-  Math.abs(sum(txs.filter((t) => t.amount < 0 && isTransfer(state, t)).map((t) => t.amount)));
+  Math.abs(sum(txs.filter((t) => base(t) < 0 && isTransfer(state, t)).map(base)));
 
 export interface MonthSummary {
   month: string;
@@ -76,10 +79,10 @@ export function spendByCategory(
   const cats = categoryMap(state);
   const totals = new Map<ID, number>();
   for (const t of txInMonth(state, month)) {
-    if (t.amount >= 0) continue;
+    if (base(t) >= 0) continue;
     if (t.transferId) continue;
     if (!includeTransfers && cats[t.categoryId]?.group === 'Savings') continue;
-    totals.set(t.categoryId, (totals.get(t.categoryId) ?? 0) + Math.abs(t.amount));
+    totals.set(t.categoryId, (totals.get(t.categoryId) ?? 0) + Math.abs(base(t)));
   }
   return [...totals.entries()]
     .map(([categoryId, amount]) => ({ categoryId, amount }))
@@ -92,8 +95,8 @@ export function essentialMonthly(state: AppState, endMonth: string, months = 3):
   return Math.round(
     sum(
       txInMonths(state, monthRange(endMonth, months))
-        .filter((t) => t.amount < 0 && !isTransfer(state, t) && cats[t.categoryId]?.essential)
-        .map((t) => Math.abs(t.amount)),
+        .filter((t) => base(t) < 0 && !isTransfer(state, t) && cats[t.categoryId]?.essential)
+        .map((t) => Math.abs(base(t))),
     ) / months,
   );
 }
@@ -108,8 +111,8 @@ export function categoryAverage(
   const range = monthRange(endMonth, months);
   const total = sum(
     txInMonths(state, range)
-      .filter((t) => t.categoryId === categoryId && t.amount < 0)
-      .map((t) => Math.abs(t.amount)),
+      .filter((t) => t.categoryId === categoryId && base(t) < 0)
+      .map((t) => Math.abs(base(t))),
   );
   return Math.round(total / months);
 }
@@ -174,8 +177,8 @@ function rolloverBalance(state: AppState, categoryId: ID, month: string): number
     if (!line || !line.rollover) break;
     const actual = sum(
       txInMonth(state, m)
-        .filter((t) => t.categoryId === categoryId && t.amount < 0)
-        .map((t) => Math.abs(t.amount)),
+        .filter((t) => t.categoryId === categoryId && base(t) < 0)
+        .map((t) => Math.abs(base(t))),
     );
     carried += line.planned - actual;
   }
@@ -185,8 +188,9 @@ function rolloverBalance(state: AppState, categoryId: ID, month: string): number
 export const LIABILITY_TYPES = new Set(['credit', 'loan']);
 
 /**
- * Live balance for one account: what it opened with, plus everything that has
- * moved through it since. Nothing writes a balance directly.
+ * Live balance for one account, in that account's own currency: what it opened
+ * with, plus everything that has moved through it. Nothing writes a balance
+ * directly.
  */
 export function accountBalance(state: AppState, accountId: ID): number {
   let balance = state.accounts.find((a) => a.id === accountId)?.openingBalance ?? 0;
@@ -194,7 +198,7 @@ export function accountBalance(state: AppState, accountId: ID): number {
   return balance;
 }
 
-/** Every account's live balance in one pass, for pages that need them all. */
+/** Every account's live native balance in one pass. */
 export function accountBalances(state: AppState): Record<ID, number> {
   const out: Record<ID, number> = Object.fromEntries(
     state.accounts.map((a) => [a.id, a.openingBalance]),
@@ -203,6 +207,27 @@ export function accountBalances(state: AppState): Record<ID, number> {
     if (t.accountId in out) out[t.accountId] += t.amount;
   }
   return out;
+}
+
+/**
+ * The same balances converted to base currency, at today's rate. Unlike a
+ * transaction — which is fixed at the rate it happened at — a balance you still
+ * hold really is worth today's rate, so this one does convert on read.
+ */
+export function accountBalancesBase(state: AppState): Record<ID, number> {
+  const native = accountBalances(state);
+  const out: Record<ID, number> = {};
+  for (const a of state.accounts) {
+    out[a.id] = Math.round((native[a.id] ?? 0) * rateOf(state, a.currency));
+  }
+  return out;
+}
+
+/** Value of one unit of `code` in the base currency. */
+export function rateOf(state: AppState, code: CurrencyCode): number {
+  if (code === state.settings.baseCurrency) return 1;
+  const entry = state.rates?.[code];
+  return entry && entry.rate > 0 ? entry.rate : 1;
 }
 
 /** Balance counting only settled money — what the bank would agree with today. */
@@ -215,7 +240,7 @@ export function clearedBalance(state: AppState, accountId: ID): number {
 }
 
 export function netWorth(state: AppState): { assets: number; liabilities: number; net: number } {
-  const balances = accountBalances(state);
+  const balances = accountBalancesBase(state);
   let assets = 0;
   let liabilities = 0;
   for (const a of state.accounts) {
@@ -232,7 +257,7 @@ export const LIQUID_TYPES = new Set(['checking', 'savings', 'cash']);
 
 /** Cash you could actually reach today. */
 export function liquidCash(state: AppState): number {
-  const balances = accountBalances(state);
+  const balances = accountBalancesBase(state);
   return state.accounts
     .filter((a) => !a.archived && LIQUID_TYPES.has(a.type))
     .reduce((total, a) => total + (balances[a.id] ?? 0), 0);

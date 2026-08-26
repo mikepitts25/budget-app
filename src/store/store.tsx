@@ -23,11 +23,11 @@ import type {
 import { demoState, emptyState } from './seed';
 import { categoryAverage, netWorth } from './selectors';
 import { addMonths, currentMonth } from '../lib/date';
-import { formatMoney } from '../lib/money';
+import { formatIn } from '../lib/currency';
 import { uid } from '../lib/id';
 
 const STORAGE_KEY = 'two-ledgers:v1';
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export type Action =
   | { type: 'load'; state: AppState }
@@ -51,6 +51,9 @@ export type Action =
   | { type: 'tx/approve'; id: ID; personId: ID }
   | { type: 'tx/transfer'; transfer: TransferInput }
   | { type: 'account/reconcile'; id: ID; date: string; balance: number; adjustment?: Transaction }
+  | { type: 'rate/set'; code: string; rate: number; updated: string }
+  | { type: 'rate/remove'; code: string }
+  | { type: 'currency/setBase'; code: string }
   | { type: 'rule/add'; rule: Rule }
   | { type: 'rule/update'; id: ID; patch: Partial<Rule> }
   | { type: 'rule/remove'; id: ID }
@@ -88,19 +91,47 @@ const patchIn = <T extends { id: ID }>(xs: T[], id: ID, patch: Partial<T>): T[] 
 
 export interface TransferInput {
   date: string;
-  /** Positive cents leaving `fromAccountId` and arriving in `toAccountId`. */
+  /** Positive cents leaving `fromAccountId`, in that account's currency. */
   amount: number;
   fromAccountId: ID;
   toAccountId: ID;
   categoryId: ID;
   payee: string;
   note?: string;
+  /**
+   * Cents actually received, in the destination account's currency. Only
+   * meaningful across currencies, where the real received amount includes the
+   * provider's spread and fees. Omit it and the current rate is used.
+   */
+  receivedAmount?: number;
 }
 
-/** Builds the two mirrored legs that make up one transfer. */
-export function buildTransfer(input: TransferInput): [Transaction, Transaction] {
+/**
+ * Builds the two mirrored legs of a transfer.
+ *
+ * Across currencies the legs carry different native amounts — dollars out,
+ * euros in — but they are the same money, so both legs share one base value.
+ * Deriving the receiving leg's base amount independently would make a transfer
+ * appear to create or destroy money whenever the rate moved.
+ */
+export function buildTransfer(state: AppState, input: TransferInput): [Transaction, Transaction] {
   const transferId = uid('tr');
-  const base = {
+  const from = state.accounts.find((a) => a.id === input.fromAccountId);
+  const to = state.accounts.find((a) => a.id === input.toAccountId);
+  const baseCurrency = state.settings.baseCurrency;
+  const fromCurrency = from?.currency ?? baseCurrency;
+  const toCurrency = to?.currency ?? baseCurrency;
+  const fromRate = rateOfCurrency(state, fromCurrency);
+  const toRate = rateOfCurrency(state, toCurrency);
+
+  const sent = Math.abs(input.amount);
+  const baseValue = Math.round(sent * fromRate);
+  const received = input.receivedAmount ?? Math.round(baseValue / toRate);
+  // The rate implied by what actually left and arrived, which is what a person
+  // would check against their transfer provider's receipt.
+  const receivedRate = received > 0 ? baseValue / received : toRate;
+
+  const shared = {
     date: input.date,
     categoryId: input.categoryId,
     payee: input.payee,
@@ -113,13 +144,34 @@ export function buildTransfer(input: TransferInput): [Transaction, Transaction] 
     comments: [],
     approvals: [],
     private: false,
+    categorySource: 'manual' as const,
     transferId,
   };
+
   return [
-    { ...base, id: uid('tx'), amount: -Math.abs(input.amount), accountId: input.fromAccountId },
-    { ...base, id: uid('tx'), amount: Math.abs(input.amount), accountId: input.toAccountId },
+    {
+      ...shared,
+      id: uid('tx'),
+      amount: -sent,
+      accountId: input.fromAccountId,
+      currency: fromCurrency,
+      rate: fromRate,
+      baseAmount: -baseValue,
+    },
+    {
+      ...shared,
+      id: uid('tx'),
+      amount: received,
+      accountId: input.toAccountId,
+      currency: toCurrency,
+      rate: receivedRate,
+      baseAmount: baseValue,
+    },
   ];
 }
+
+const rateOfCurrency = (state: AppState, code: string): number =>
+  code === state.settings.baseCurrency ? 1 : (state.rates?.[code]?.rate ?? 1);
 
 /** Ids of both legs, given any transaction that might be one. */
 function transferSiblings(state: AppState, ids: Set<ID>): Set<ID> {
@@ -219,7 +271,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'tx/transfer':
       return {
         ...state,
-        transactions: sortTx([...buildTransfer(action.transfer), ...state.transactions]),
+        transactions: sortTx([...buildTransfer(state, action.transfer), ...state.transactions]),
       };
 
     case 'account/reconcile':
@@ -233,6 +285,69 @@ export function reducer(state: AppState, action: Action): AppState {
           : state.transactions,
       };
 
+    case 'rate/set':
+      return {
+        ...state,
+        rates: { ...state.rates, [action.code]: { rate: action.rate, updated: action.updated } },
+      };
+    case 'rate/remove': {
+      const { [action.code]: _removed, ...rest } = state.rates;
+      return { ...state, rates: rest };
+    }
+    case 'currency/setBase': {
+      // Changing the base currency re-expresses every stored base amount through
+      // the old base, so history keeps its meaning instead of silently changing
+      // by the size of the exchange rate.
+      const previous = state.settings.baseCurrency;
+      if (action.code === previous) return state;
+      const newBaseInOldBase = rateOfCurrency(state, action.code);
+      if (!newBaseInOldBase) return state;
+
+      const rescale = (amountInOldBase: number) =>
+        Math.round(amountInOldBase / newBaseInOldBase);
+
+      const rates: AppState['rates'] = {};
+      for (const [code, entry] of Object.entries(state.rates)) {
+        if (code === action.code) continue;
+        rates[code] = { rate: entry.rate / newBaseInOldBase, updated: entry.updated };
+      }
+      // The old base currency is now foreign, and needs a rate of its own.
+      rates[previous] = { rate: 1 / newBaseInOldBase, updated: state.rates[action.code]?.updated ?? '' };
+
+      return {
+        ...state,
+        settings: { ...state.settings, baseCurrency: action.code },
+        rates,
+        transactions: state.transactions.map((t) => ({
+          ...t,
+          baseAmount: rescale(t.baseAmount),
+          rate: t.rate / newBaseInOldBase,
+        })),
+        budget: state.budget.map((b) => ({ ...b, planned: rescale(b.planned) })),
+        goals: state.goals.map((g) => ({
+          ...g,
+          target: rescale(g.target),
+          saved: rescale(g.saved),
+          monthlyContribution: rescale(g.monthlyContribution),
+        })),
+        debts: state.debts.map((d) => ({
+          ...d,
+          balance: rescale(d.balance),
+          minPayment: rescale(d.minPayment),
+        })),
+        netWorth: state.netWorth.map((n) => ({
+          ...n,
+          assets: rescale(n.assets),
+          liabilities: rescale(n.liabilities),
+        })),
+        retirement: {
+          ...state.retirement,
+          currentSavings: rescale(state.retirement.currentSavings),
+          monthlyContribution: rescale(state.retirement.monthlyContribution),
+          desiredAnnualSpend: rescale(state.retirement.desiredAnnualSpend),
+        },
+      };
+    }
     case 'rule/add':
       return { ...state, rules: [...state.rules, action.rule] };
     case 'rule/update':
@@ -434,10 +549,18 @@ function mapMap(state: AppState, id: ID, fn: (m: MindMap) => MindMap): AppState 
 }
 
 /**
- * Brings a saved file up to the current schema. v1 stored a typed-in balance per
- * account and a boolean `cleared` per transaction; v2 derives balances from the
- * ledger, so each account's opening balance is back-solved from the balance the
- * user last saw. Migrations are cumulative and must stay idempotent.
+ * Brings a saved file up to the current schema. Migrations are cumulative and
+ * must stay idempotent.
+ *
+ * v1 → v2: balances were typed in per account and transactions had a boolean
+ * `cleared`. Balances are now derived from the ledger, so each opening balance
+ * is back-solved from the balance the user last saw.
+ *
+ * v2 → v3: everything was implicitly one currency. Accounts gain an explicit
+ * currency, transactions gain their native currency plus a base-currency amount
+ * and the rate used, and categories gain a provenance so automatic guesses can
+ * be told apart from choices a person made. A single-currency file converts
+ * with every rate at 1, so no number changes.
  */
 export function migrate(raw: any): AppState {
   const base = emptyState();
@@ -447,30 +570,58 @@ export function migrate(raw: any): AppState {
     settings: { ...base.settings, ...(raw.settings ?? {}) },
     rules: raw.rules ?? [],
     scheduled: raw.scheduled ?? [],
+    rates: raw.rates ?? {},
     mindMaps: raw.mindMaps ?? base.mindMaps,
     dismissedSuggestions: raw.dismissedSuggestions ?? [],
   };
 
   const version = raw.version ?? 1;
 
-  state.transactions = (raw.transactions ?? []).map((t: any) => ({
-    ...t,
-    status: t.status ?? (t.cleared === false ? 'pending' : 'cleared'),
-    comments: t.comments ?? [],
-    approvals: t.approvals ?? [],
-    private: t.private ?? false,
-    cleared: undefined,
+  // v2 stored the household currency under `currency`.
+  const baseCurrency: string =
+    raw.settings?.baseCurrency ?? raw.settings?.currency ?? base.settings.baseCurrency;
+  state.settings.baseCurrency = baseCurrency;
+  delete (state.settings as unknown as Record<string, unknown>).currency;
+
+  const accountCurrency = new Map<string, string>(
+    (raw.accounts ?? []).map((a: any) => [a.id, a.currency ?? baseCurrency]),
+  );
+
+  state.transactions = (raw.transactions ?? []).map((t: any) => {
+    const currency = t.currency ?? accountCurrency.get(t.accountId) ?? baseCurrency;
+    const rate = t.rate ?? (currency === baseCurrency ? 1 : (state.rates[currency]?.rate ?? 1));
+    return {
+      ...t,
+      status: t.status ?? (t.cleared === false ? 'pending' : 'cleared'),
+      comments: t.comments ?? [],
+      approvals: t.approvals ?? [],
+      private: t.private ?? false,
+      currency,
+      rate,
+      baseAmount: t.baseAmount ?? Math.round(t.amount * rate),
+      // Pre-v3 transactions have no provenance. Treating them as manual is the
+      // safe default: it means rules will not silently reclassify years of
+      // history the first time they run.
+      categorySource: t.categorySource ?? 'manual',
+      cleared: undefined,
+    };
+  });
+
+  state.scheduled = (raw.scheduled ?? []).map((item: any) => ({
+    ...item,
+    currency: item.currency ?? accountCurrency.get(item.accountId) ?? baseCurrency,
   }));
 
   state.accounts = (raw.accounts ?? []).map((a: any) => {
-    if (a.openingBalance !== undefined) return { ...a };
+    const currency = a.currency ?? baseCurrency;
+    if (a.openingBalance !== undefined) return { ...a, currency };
     // v1 stored the live balance; recover the opening figure from the ledger so
     // the number on screen does not jump after upgrading.
     const moved = state.transactions
       .filter((t) => t.accountId === a.id)
       .reduce((total, t) => total + t.amount, 0);
     const { balance, ...rest } = a;
-    return { ...rest, openingBalance: (balance ?? 0) - moved };
+    return { ...rest, currency, openingBalance: (balance ?? 0) - moved };
   });
 
   // Whoever is using the app must always resolve to a real person.
@@ -509,8 +660,11 @@ interface Ctx {
   redo: () => void;
   canUndo: boolean;
   canRedo: boolean;
-  /** Format cents in the household's currency. */
-  money: (cents: number, opts?: { compact?: boolean; sign?: boolean }) => string;
+  /**
+   * Format cents. Defaults to the household's base currency; pass `currency` to
+   * render a native amount, such as a euro account's own balance.
+   */
+  money: (cents: number, opts?: { compact?: boolean; sign?: boolean; currency?: string }) => string;
   /** The month the app is currently focused on. */
   month: string;
   setMonth: (month: string) => void;
@@ -563,10 +717,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       canUndo: history.past.length > 0,
       canRedo: history.future.length > 0,
       money: (cents, opts) =>
-        formatMoney(cents, {
-          currency: state.settings.currency,
+        formatIn(cents, opts?.currency ?? state.settings.baseCurrency, {
           locale: state.settings.locale,
-          ...opts,
+          compact: opts?.compact,
+          sign: opts?.sign,
         }),
       month,
       setMonth,

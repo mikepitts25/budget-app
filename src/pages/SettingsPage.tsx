@@ -4,13 +4,12 @@ import type { AppState, Category, CategoryGroup } from '../store/types';
 import { uid } from '../lib/id';
 import { Card, ConfirmButton, Field, MoneyInput, PercentInput, useToast } from '../components/ui';
 import RulesManager from '../components/RulesManager';
+import CurrencyManager from '../components/CurrencyManager';
 
 const GROUPS: CategoryGroup[] = [
   'Income', 'Housing', 'Transport', 'Food', 'Health', 'Kids',
   'Lifestyle', 'Subscriptions', 'Debt', 'Savings', 'Other',
 ];
-
-const CURRENCIES = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'NZD', 'JPY', 'CHF', 'SEK', 'INR', 'SGD', 'ZAR'];
 
 export default function SettingsPage() {
   const { state, dispatch, money } = useApp();
@@ -103,19 +102,6 @@ export default function SettingsPage() {
 
         <Card title="Preferences">
           <div className="field-row">
-            <Field label="Currency">
-              <select
-                className="select"
-                value={state.settings.currency}
-                onChange={(e) => dispatch({ type: 'settings/update', patch: { currency: e.target.value } })}
-              >
-                {CURRENCIES.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </Field>
             <Field label="Number format">
               <select
                 className="select"
@@ -197,6 +183,8 @@ export default function SettingsPage() {
           </div>
         </Card>
       </div>
+
+      <CurrencyManager />
 
       <RulesManager />
 

@@ -1,6 +1,12 @@
 import type { AppState, ID, Person, Transaction } from '../store/types';
 import { allocate, sum } from './money';
 
+/**
+ * Fairness is worked out in base currency. Who owes whom cannot be decided by
+ * adding a euro rent to a dollar grocery run.
+ */
+const value = (tx: Transaction): number => tx.baseAmount ?? tx.amount;
+
 /** Weights each person should carry for a given transaction, under its split rule. */
 export function shareWeights(tx: Transaction, people: Person[]): Record<ID, number> {
   switch (tx.splitRule) {
@@ -33,7 +39,7 @@ export function shareWeights(tx: Transaction, people: Person[]): Record<ID, numb
 export function shareOf(tx: Transaction, people: Person[]): Record<ID, number> {
   const weights = shareWeights(tx, people);
   const ordered = people.map((p) => weights[p.id] ?? 0);
-  const parts = allocate(Math.abs(tx.amount), ordered);
+  const parts = allocate(Math.abs(value(tx)), ordered);
   return Object.fromEntries(people.map((p, i) => [p.id, parts[i]]));
 }
 
@@ -67,19 +73,19 @@ export function fairness(
   const paid: Record<ID, number> = Object.fromEntries(people.map((p) => [p.id, 0]));
   const owed: Record<ID, number> = Object.fromEntries(people.map((p) => [p.id, 0]));
 
-  const spend = transactions.filter((t) => t.amount < 0);
+  const spend = transactions.filter((t) => value(t) < 0);
   for (const tx of spend) {
     const shares = shareOf(tx, people);
     for (const p of people) owed[p.id] += shares[p.id] ?? 0;
     if (tx.paidBy === 'joint') {
       // A joint account is funded by both, pro rata to income.
       const contribution = allocate(
-        Math.abs(tx.amount),
+        Math.abs(value(tx)),
         people.map((p) => Math.max(1, p.annualIncome)),
       );
       people.forEach((p, i) => (paid[p.id] += contribution[i]));
     } else {
-      paid[tx.paidBy] = (paid[tx.paidBy] ?? 0) + Math.abs(tx.amount);
+      paid[tx.paidBy] = (paid[tx.paidBy] ?? 0) + Math.abs(value(tx));
     }
   }
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { testAccount, testTransaction } from '../test-utils';
 import type { AppState, Transaction } from '../store/types';
 import { emptyState } from '../store/seed';
 import {
@@ -15,25 +16,8 @@ import {
 } from './analysis';
 import { currentMonth, addMonths } from './date';
 
-let seq = 0;
-const tx = (over: Partial<Transaction> = {}): Transaction => ({
-  id: `t${seq++}`,
-  date: '2026-06-10',
-  amount: -5000,
-  accountId: 'chk',
-  categoryId: 'food',
-  payee: 'Shop',
-  note: '',
-  paidBy: 'joint',
-  splitRule: 'even',
-  splitShares: {},
-  tags: [],
-  status: 'cleared',
-  comments: [],
-  approvals: [],
-  private: false,
-  ...over,
-});
+const tx = (over: Partial<Transaction> = {}): Transaction =>
+  testTransaction({ accountId: 'chk', categoryId: 'food', ...over });
 
 function stateWith(transactions: Transaction[]): AppState {
   const base = emptyState();
@@ -41,18 +25,7 @@ function stateWith(transactions: Transaction[]): AppState {
   const fun = base.categories.find((c) => c.name === 'Restaurants')!;
   return {
     ...base,
-    accounts: [
-      {
-        id: 'chk',
-        name: 'Checking',
-        institution: '',
-        type: 'checking',
-        owner: 'joint',
-        openingBalance: 500000,
-        apr: 0,
-        archived: false,
-      },
-    ],
+    accounts: [testAccount({ id: 'chk', openingBalance: 500000 })],
     transactions: transactions.map((t) => ({
       ...t,
       categoryId: t.categoryId === 'food' ? food.id : t.categoryId === 'fun' ? fun.id : t.categoryId,

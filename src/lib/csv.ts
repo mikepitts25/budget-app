@@ -1,6 +1,6 @@
-import type { Account, Category, ID, Transaction } from '../store/types';
+import type { Account, AppState, Category, ID, Transaction } from '../store/types';
 import { toCents } from './money';
-import { uid } from './id';
+import { makeTransaction } from '../store/factory';
 
 /** RFC4180-ish parser: handles quoted fields, embedded commas and newlines. */
 export function parseCSV(text: string): string[][] {
@@ -113,6 +113,7 @@ export function rowsToTransactions(
   rows: string[][],
   map: Partial<ColumnMap>,
   ctx: {
+    state: AppState;
     account: Account;
     categories: Category[];
     existing: Transaction[];
@@ -155,24 +156,23 @@ export function rowsToTransactions(
             (c) => c.name.toLowerCase() === (row[map.category!] ?? '').trim().toLowerCase(),
           )?.id
         : undefined;
+    const learnedMatch = matchCategory(payee, learned);
 
-    out.push({
-      id: uid('tx'),
-      date,
-      amount,
-      accountId: ctx.account.id,
-      categoryId: namedCategory ?? matchCategory(payee, learned) ?? ctx.defaultCategoryId,
-      payee: payee || 'Unknown',
-      note: map.note !== undefined ? (row[map.note] ?? '').trim() : '',
-      paidBy: ctx.paidBy,
-      splitRule: 'even',
-      splitShares: {},
-      tags: ['imported'],
-      status: 'cleared',
-      comments: [],
-      approvals: [],
-      private: false,
-    });
+    out.push(
+      makeTransaction(ctx.state, {
+        date,
+        amount,
+        accountId: ctx.account.id,
+        categoryId: namedCategory ?? learnedMatch?.categoryId ?? ctx.defaultCategoryId,
+        payee: payee || 'Unknown',
+        note: map.note !== undefined ? (row[map.note] ?? '').trim() : '',
+        paidBy: ctx.paidBy,
+        splitRule: 'even',
+        tags: ['imported'],
+        categorySource: namedCategory ? 'imported' : learnedMatch ? 'learned' : 'default',
+        categoryConfidence: namedCategory ? undefined : learnedMatch?.confidence,
+      }),
+    );
   }
   return { transactions: out, skipped, duplicates };
 }
@@ -180,35 +180,57 @@ export function rowsToTransactions(
 const keyOf = (payee: string): string =>
   payee.toLowerCase().replace(/[^a-z ]/g, ' ').replace(/\s+/g, ' ').trim();
 
-/** Payee -> most-used category, learned from what the couple has already filed. */
-export function learnPayeeCategories(existing: Transaction[]): Map<string, ID> {
+export interface LearnedCategory {
+  categoryId: ID;
+  /** Share of this payee's history that used the winning category, 0..1. */
+  confidence: number;
+  samples: number;
+}
+
+/**
+ * Payee -> most-used category, learned from what the couple has already filed.
+ * A category a person chose by hand counts for more than one the app guessed,
+ * so correcting a mislabelled transaction actually teaches the matcher rather
+ * than being outvoted by the guesses it is meant to fix.
+ */
+export function learnPayeeCategories(existing: Transaction[]): Map<string, LearnedCategory> {
+  const MANUAL_WEIGHT = 4;
   const counts = new Map<string, Map<ID, number>>();
   for (const t of existing) {
     const k = keyOf(t.payee);
     if (!k) continue;
+    const weight = t.categorySource === 'manual' ? MANUAL_WEIGHT : 1;
     const inner = counts.get(k) ?? new Map<ID, number>();
-    inner.set(t.categoryId, (inner.get(t.categoryId) ?? 0) + 1);
+    inner.set(t.categoryId, (inner.get(t.categoryId) ?? 0) + weight);
     counts.set(k, inner);
   }
-  const out = new Map<string, ID>();
+
+  const out = new Map<string, LearnedCategory>();
   for (const [k, inner] of counts) {
-    const best = [...inner.entries()].sort((a, b) => b[1] - a[1])[0];
-    if (best) out.set(k, best[0]);
+    const entries = [...inner.entries()].sort((a, b) => b[1] - a[1]);
+    const total = entries.reduce((sum, [, n]) => sum + n, 0);
+    const [categoryId, weight] = entries[0];
+    out.set(k, { categoryId, confidence: total ? weight / total : 0, samples: total });
   }
   return out;
 }
 
-export function matchCategory(payee: string, learned: Map<string, ID>): ID | undefined {
+export function matchCategory(
+  payee: string,
+  learned: Map<string, LearnedCategory>,
+): LearnedCategory | undefined {
   const k = keyOf(payee);
   if (!k) return undefined;
-  if (learned.has(k)) return learned.get(k);
-  // Fall back to the longest known payee that is a substring of this one.
-  let best: { key: string; id: ID } | undefined;
-  for (const [known, id] of learned) {
+  const exact = learned.get(k);
+  if (exact) return exact;
+  // Fall back to the longest known payee that is a substring of this one, and
+  // discount it, since a partial name is weaker evidence than an exact one.
+  let best: { key: string; match: LearnedCategory } | undefined;
+  for (const [known, match] of learned) {
     if (known.length < 4) continue;
-    if (k.includes(known) && (!best || known.length > best.key.length)) best = { key: known, id };
+    if (k.includes(known) && (!best || known.length > best.key.length)) best = { key: known, match };
   }
-  return best?.id;
+  return best ? { ...best.match, confidence: best.match.confidence * 0.75 } : undefined;
 }
 
 export function transactionsToCSV(

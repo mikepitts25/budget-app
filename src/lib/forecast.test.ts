@@ -1,34 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { AppState, Scheduled } from '../store/types';
 import { emptyState } from '../store/seed';
+import { testAccount, testScheduled, testTransaction } from '../test-utils';
 import { buildForecast } from './forecast';
 import { monthlyEquivalent, nextDate, occurrencesBetween } from './schedule';
 
-const account = {
-  id: 'chk',
-  name: 'Checking',
-  institution: '',
-  type: 'checking' as const,
-  owner: 'joint' as const,
-  openingBalance: 200000,
-  apr: 0,
-  archived: false,
-};
+const account = testAccount({ id: 'chk', openingBalance: 200000 });
 
-const scheduled = (over: Partial<Scheduled> = {}): Scheduled => ({
-  id: 's1',
-  name: 'Rent',
-  amount: -120000,
-  accountId: 'chk',
-  categoryId: 'cat',
-  cadence: 'monthly',
-  nextDate: '2026-06-01',
-  paidBy: 'joint',
-  splitRule: 'income',
-  enabled: true,
-  autoDetected: false,
-  ...over,
-});
+const scheduled = (over: Partial<Scheduled> = {}): Scheduled => testScheduled(over);
 
 const stateWith = (over: Partial<AppState> = {}): AppState => ({
   ...emptyState(),
@@ -102,7 +81,7 @@ describe('buildForecast', () => {
 
   it('ignores savings accounts, since bills do not come out of the house fund', () => {
     const state = stateWith({
-      accounts: [account, { ...account, id: 'sav', type: 'savings', openingBalance: 5000000 }],
+      accounts: [account, testAccount({ id: 'sav', type: 'savings', openingBalance: 5000000 })],
     });
     expect(buildForecast(state, 30, '2026-06-01', noVariable).startingBalance).toBe(200000);
   });
@@ -146,23 +125,14 @@ describe('buildForecast', () => {
   it('includes future-dated entries already in the ledger', () => {
     const state = stateWith({
       transactions: [
-        {
+        testTransaction({
           id: 'x',
           date: '2026-06-05',
           amount: -30000,
           accountId: 'chk',
-          categoryId: 'c',
           payee: 'Booked ahead',
-          note: '',
-          paidBy: 'joint',
-          splitRule: 'even',
-          splitShares: {},
-          tags: [],
           status: 'pending',
-          comments: [],
-          approvals: [],
-          private: false,
-        },
+        }),
       ],
     });
     const f = buildForecast(state, 30, '2026-06-01', noVariable);

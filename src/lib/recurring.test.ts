@@ -1,25 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { testTransaction } from '../test-utils';
 import type { Transaction } from '../store/types';
 import { committedMonthly, detectRecurring, staleSeries } from './recurring';
 
-let seq = 0;
-const tx = (date: string, amount: number, payee: string): Transaction => ({
-  id: `t${seq++}`,
-  date,
-  amount,
-  accountId: 'acc',
-  categoryId: 'cat',
-  payee,
-  note: '',
-  paidBy: 'joint',
-  splitRule: 'even',
-  splitShares: {},
-  tags: [],
-  status: 'cleared',
-  comments: [],
-  approvals: [],
-  private: false,
-});
+const tx = (date: string, amount: number, payee: string): Transaction =>
+  testTransaction({ date, amount, payee });
 
 const monthlySeries = (payee: string, amount: number, months: string[]) =>
   months.map((m) => tx(`${m}-14`, -amount, payee));
