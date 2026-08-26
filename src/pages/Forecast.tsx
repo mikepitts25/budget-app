@@ -51,7 +51,10 @@ export default function Forecast() {
     name: '',
     amount: 0,
     accountId: state.accounts[0]?.id ?? '',
-    categoryId: state.categories.find((c) => c.kind === 'expense')?.id ?? '',
+    categoryId:
+      state.categories.find((c) => c.name === 'Miscellaneous' && !c.archived)?.id ??
+      state.categories.find((c) => c.kind === 'expense')?.id ??
+      '',
     cadence: 'monthly',
     nextDate: todayISO(),
     paidBy: 'joint',

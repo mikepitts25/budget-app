@@ -73,6 +73,7 @@ export function emptyState(): AppState {
       pinnedMonth: '',
       bigPurchaseThreshold: 25000,
       safeToSpendBuffer: 50000,
+      activePersonId: alex.id,
       theme: 'dark',
       onboarded: false,
     },
@@ -348,7 +349,12 @@ export function demoState(): AppState {
 
   return {
     ...base,
-    settings: { ...base.settings, householdName: 'Alex & Jordan', onboarded: true },
+    settings: {
+      ...base.settings,
+      householdName: 'Alex & Jordan',
+      onboarded: true,
+      activePersonId: people[0].id,
+    },
     people,
     accounts,
     transactions,

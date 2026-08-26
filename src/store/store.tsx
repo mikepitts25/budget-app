@@ -418,6 +418,11 @@ export function migrate(raw: any): AppState {
     return { ...rest, openingBalance: (balance ?? 0) - moved };
   });
 
+  // Whoever is using the app must always resolve to a real person.
+  if (!state.people.some((p) => p.id === state.settings.activePersonId)) {
+    state.settings.activePersonId = state.people[0]?.id ?? '';
+  }
+
   state.version = Math.max(version, SCHEMA_VERSION);
   return state;
 }

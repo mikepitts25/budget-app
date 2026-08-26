@@ -7,8 +7,10 @@ import { uid } from '../lib/id';
 import { guessColumns, parseCSV, rowsToTransactions, transactionsToCSV, type ColumnMap } from '../lib/csv';
 import { shareOf } from '../lib/split';
 import { categorizeIncoming, ruleFromTransaction } from '../lib/rules';
+import { activePerson, needsApproval, visiblePayee } from '../lib/couples';
 import { RuleModal } from '../components/RulesManager';
 import { Card, ConfirmButton, Empty, Field, Modal, MoneyInput, Segmented, useToast } from '../components/ui';
+import { canSeeDetail as canSee } from '../lib/couples';
 
 type Filter = 'all' | 'in' | 'out';
 
@@ -86,7 +88,13 @@ export default function Transactions() {
     date: todayISO(),
     amount: 0,
     accountId: state.accounts[0]?.id ?? '',
-    categoryId: state.categories.find((c) => c.kind === 'expense')?.id ?? '',
+    // Defaulting to the first expense category makes every new entry rent, which
+    // is both wrong and quietly exempt from the big-purchase check-in.
+    categoryId:
+      state.categories.find((c) => c.name === 'Miscellaneous' && !c.archived)?.id ??
+      state.categories.find((c) => c.kind === 'expense' && !c.essential && !c.archived)?.id ??
+      state.categories.find((c) => c.kind === 'expense')?.id ??
+      '',
     payee: '',
     note: '',
     paidBy: 'joint',
@@ -101,6 +109,41 @@ export default function Transactions() {
 
   return (
     <div className="col gap-16">
+      {rows.some((t) => needsApproval(state, t)) && (
+        <Card
+          title="Waiting on both of you"
+          hint={`Anything over ${money(state.settings.bigPurchaseThreshold)} needs a nod from each of you — an agreement you set, not a rule the app invented.`}
+        >
+          {rows
+            .filter((t) => needsApproval(state, t))
+            .slice(0, 6)
+            .map((t) => {
+              const me = activePerson(state);
+              const mine = t.approvals.includes(me.id);
+              return (
+                <div key={t.id} className="list-row">
+                  <span className="small bold truncate">{visiblePayee(state, t)}</span>
+                  <span className="small num neg">{money(t.amount)}</span>
+                  <span className="spacer" />
+                  <span className="tiny faint">
+                    {t.approvals.length} of {state.people.length} signed off
+                  </span>
+                  <button
+                    className="btn sm"
+                    disabled={mine}
+                    onClick={() => {
+                      dispatch({ type: 'tx/approve', id: t.id, personId: me.id });
+                      toast(`${me.name} signed off on ${visiblePayee(state, t)}`);
+                    }}
+                  >
+                    {mine ? '✓ You approved' : `Approve as ${me.name}`}
+                  </button>
+                </div>
+              );
+            })}
+        </Card>
+      )}
+
       <Card>
         <div className="row wrap gap-16">
           <Segmented
@@ -292,9 +335,16 @@ export default function Transactions() {
                           style={{ padding: 0, fontWeight: 550 }}
                           onClick={() => setEditing(t)}
                         >
-                          {t.payee}
+                          {visiblePayee(state, t)}
                         </button>
-                        {t.note && <div className="tiny faint truncate">{t.note}</div>}
+                        {t.private && <span className="chip" title="Detail hidden from your partner">🔒</span>}
+                        {needsApproval(state, t) && <span className="chip warn">needs sign-off</span>}
+                        {t.comments.length > 0 && (
+                          <span className="chip" title={`${t.comments.length} comments`}>
+                            💬 {t.comments.length}
+                          </span>
+                        )}
+                        {t.note && canSee(state, t) && <div className="tiny faint truncate">{t.note}</div>}
                       </td>
                       <td className="small">
                         {cats[t.categoryId]?.icon} {cats[t.categoryId]?.name ?? '—'}
@@ -369,6 +419,21 @@ function TransactionModal({
   const toast = useToast();
   const [draft, setDraft] = useState<Transaction>(tx);
   const [makingRule, setMakingRule] = useState<import('../store/types').Rule | null>(null);
+  const [commentText, setCommentText] = useState('');
+
+  const addComment = () => {
+    const text = commentText.trim();
+    if (!text) return;
+    const comment = {
+      id: uid('cm'),
+      personId: activePerson(state).id,
+      text,
+      at: new Date().toISOString(),
+    };
+    dispatch({ type: 'tx/comment', id: draft.id, comment });
+    setDraft((d) => ({ ...d, comments: [...d.comments, comment] }));
+    setCommentText('');
+  };
   const set = <K extends keyof Transaction>(key: K, value: Transaction[K]) =>
     setDraft((d) => ({ ...d, [key]: value }));
 
@@ -600,6 +665,83 @@ function TransactionModal({
           onChange={(e) => set('tags', e.target.value.split(/\s+/).filter(Boolean))}
         />
       </Field>
+
+      <label className="row gap-6 small">
+        <input
+          type="checkbox"
+          checked={draft.private}
+          onChange={(e) => set('private', e.target.checked)}
+        />
+        Keep the detail private
+        <span className="tiny faint">
+          — your partner still sees the amount, but not the merchant. Hiding the amount would quietly
+          break every total in the app.
+        </span>
+      </label>
+
+      {!isNew && needsApproval(state, draft) && (
+        <div className="callout warn">
+          <div className="bold small">
+            Over your {money(state.settings.bigPurchaseThreshold)} check-in threshold
+          </div>
+          <div className="row wrap gap-6 mt-8">
+            {state.people.map((p) => {
+              const signed = draft.approvals.includes(p.id);
+              return (
+                <button
+                  key={p.id}
+                  className={`btn sm ${signed ? '' : 'primary'}`}
+                  disabled={signed}
+                  onClick={() => {
+                    dispatch({ type: 'tx/approve', id: draft.id, personId: p.id });
+                    setDraft((d) => ({ ...d, approvals: [...d.approvals, p.id] }));
+                  }}
+                >
+                  {signed ? `✓ ${p.name}` : `Sign off as ${p.name}`}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {!isNew && (
+        <div>
+          <div className="card-title mb-8">Between you two</div>
+          {draft.comments.length === 0 && (
+            <div className="tiny faint mb-8">
+              No comments yet. This is the place for "what was this?" — better here than remembered wrong
+              three weeks later.
+            </div>
+          )}
+          {draft.comments.map((c) => {
+            const person = state.people.find((p) => p.id === c.personId);
+            return (
+              <div key={c.id} className="list-row">
+                <span className="dot" style={{ background: person?.color }} />
+                <div style={{ minWidth: 0 }}>
+                  <div className="small">{c.text}</div>
+                  <div className="tiny faint">
+                    {person?.name} · {c.at.slice(0, 10)}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+          <div className="row gap-6 mt-8">
+            <input
+              className="input"
+              placeholder={`Add a note as ${activePerson(state).name}…`}
+              value={commentText}
+              onChange={(e) => setCommentText(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && addComment()}
+            />
+            <button className="btn sm" onClick={addComment} disabled={!commentText.trim()}>
+              Send
+            </button>
+          </div>
+        </div>
+      )}
 
       {makingRule && <RuleModal rule={makingRule} isNew onClose={() => setMakingRule(null)} />}
     </Modal>

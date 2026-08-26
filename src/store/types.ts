@@ -297,6 +297,11 @@ export interface Settings {
   bigPurchaseThreshold: number;
   /** Buffer kept in checking when computing safe-to-spend, in cents. */
   safeToSpendBuffer: number;
+  /**
+   * Which partner is using the app right now. Comments and approvals are
+   * attributed to them, and private spending is only itemised for them.
+   */
+  activePersonId: ID;
   theme: 'dark' | 'light';
   onboarded: boolean;
 }

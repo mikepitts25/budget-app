@@ -4,6 +4,7 @@ import { addMonths, currentMonth, monthLabel } from './lib/date';
 import Dashboard from './pages/Dashboard';
 import Forecast from './pages/Forecast';
 import Insights from './pages/Insights';
+import MoneyDate from './pages/MoneyDate';
 import Transactions from './pages/Transactions';
 import Budget from './pages/Budget';
 import Together from './pages/Together';
@@ -18,7 +19,7 @@ import Reports from './pages/Reports';
 import SettingsPage from './pages/SettingsPage';
 
 export type PageKey =
-  | 'dashboard' | 'forecast' | 'transactions' | 'budget' | 'together' | 'insights'
+  | 'dashboard' | 'forecast' | 'transactions' | 'budget' | 'together' | 'insights' | 'moneydate'
   | 'goals' | 'savings' | 'mindmap' | 'plans'
   | 'debt' | 'networth' | 'retirement' | 'reports' | 'settings';
 
@@ -40,6 +41,7 @@ const NAV: NavEntry[] = [
   { key: 'budget', label: 'Budget', icon: '◐', section: 'Month', subtitle: 'Plan the month before it spends itself' },
   { key: 'together', label: 'Together', icon: '⚖', section: 'Month', subtitle: 'Who paid what, and who owes whom' },
   { key: 'savings', label: 'Find savings', icon: '✦', section: 'Month', subtitle: 'Money you are leaving on the table' },
+  { key: 'moneydate', label: 'Money date', icon: '♥', section: 'Month', subtitle: 'The monthly review, for the two of you' },
 
   { key: 'goals', label: 'Goals', icon: '◎', section: 'Plan', subtitle: 'House, car, travel — funded and forecast' },
   { key: 'mindmap', label: 'Mind map', icon: '❖', section: 'Plan', subtitle: 'Think out loud about the life you are building' },
@@ -55,6 +57,7 @@ const PAGES: Record<PageKey, React.ComponentType> = {
   dashboard: Dashboard,
   forecast: Forecast,
   insights: Insights,
+  moneydate: MoneyDate,
   transactions: Transactions,
   budget: Budget,
   together: Together,
@@ -175,6 +178,19 @@ export default function App() {
             </button>
           </div>
           {!isCurrent && <span className="chip warn">Viewing a past month</span>}
+
+          <div className="seg" title="Who is using the app right now">
+            {state.people.map((p) => (
+              <button
+                key={p.id}
+                className={p.id === state.settings.activePersonId ? 'active' : ''}
+                onClick={() => dispatch({ type: 'settings/update', patch: { activePersonId: p.id } })}
+              >
+                <span className="dot" style={{ background: p.color, marginRight: 5 }} />
+                {p.name}
+              </button>
+            ))}
+          </div>
 
           <button
             className="btn ghost sm"
