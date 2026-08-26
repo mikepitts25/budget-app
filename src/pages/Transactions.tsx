@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { useApp } from '../store/store';
-import type { ID, SplitRule, Transaction } from '../store/types';
+import type { ID, SplitRule, Transaction, TxStatus } from '../store/types';
 import { categoryMap, txInMonth } from '../store/selectors';
 import { dateLabel, monthLabel, todayISO } from '../lib/date';
 import { uid } from '../lib/id';
@@ -9,6 +9,12 @@ import { shareOf } from '../lib/split';
 import { Card, ConfirmButton, Empty, Field, Modal, MoneyInput, Segmented, useToast } from '../components/ui';
 
 type Filter = 'all' | 'in' | 'out';
+
+const STATUS_LABEL: Record<TxStatus, string> = {
+  pending: 'Pending',
+  cleared: 'Cleared',
+  reconciled: 'Reconciled',
+};
 
 const SPLIT_LABEL: Record<SplitRule, string> = {
   even: 'Split evenly',
@@ -26,6 +32,7 @@ export default function Transactions() {
   const [filter, setFilter] = useState<Filter>('all');
   const [categoryFilter, setCategoryFilter] = useState<ID | 'all'>('all');
   const [personFilter, setPersonFilter] = useState<ID | 'all' | 'joint'>('all');
+  const [statusFilter, setStatusFilter] = useState<TxStatus | 'all'>('all');
   const [scope, setScope] = useState<'month' | 'all'>('month');
   const [selected, setSelected] = useState<Set<ID>>(new Set());
   const [editing, setEditing] = useState<Transaction | null>(null);
@@ -39,6 +46,7 @@ export default function Transactions() {
       if (filter === 'out' && t.amount >= 0) return false;
       if (categoryFilter !== 'all' && t.categoryId !== categoryFilter) return false;
       if (personFilter !== 'all' && t.paidBy !== personFilter) return false;
+      if (statusFilter !== 'all' && t.status !== statusFilter) return false;
       if (!q) return true;
       return (
         t.payee.toLowerCase().includes(q) ||
@@ -47,10 +55,12 @@ export default function Transactions() {
         t.tags.some((tag) => tag.includes(q))
       );
     });
-  }, [base, query, filter, categoryFilter, personFilter, cats]);
+  }, [base, query, filter, categoryFilter, personFilter, statusFilter, cats]);
 
-  const inflow = rows.filter((t) => t.amount > 0).reduce((a, t) => a + t.amount, 0);
-  const outflow = rows.filter((t) => t.amount < 0).reduce((a, t) => a + Math.abs(t.amount), 0);
+  const real = rows.filter((t) => !t.transferId);
+  const inflow = real.filter((t) => t.amount > 0).reduce((a, t) => a + t.amount, 0);
+  const outflow = real.filter((t) => t.amount < 0).reduce((a, t) => a + Math.abs(t.amount), 0);
+  const transferCount = rows.length - real.length;
 
   const toggle = (id: ID) => {
     const next = new Set(selected);
@@ -81,7 +91,10 @@ export default function Transactions() {
     splitRule: state.settings.defaultSplit,
     splitShares: {},
     tags: [],
-    cleared: true,
+    status: 'cleared',
+    comments: [],
+    approvals: [],
+    private: false,
   });
 
   return (
@@ -139,6 +152,19 @@ export default function Transactions() {
               </option>
             ))}
           </select>
+          <select
+            className="select"
+            style={{ maxWidth: 150 }}
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as TxStatus | 'all')}
+          >
+            <option value="all">Any status</option>
+            {(Object.keys(STATUS_LABEL) as TxStatus[]).map((st) => (
+              <option key={st} value={st}>
+                {STATUS_LABEL[st]}
+              </option>
+            ))}
+          </select>
           <div className="spacer" />
           <button className="btn" onClick={exportCSV}>
             ⭳ Export
@@ -160,6 +186,9 @@ export default function Transactions() {
           <span className={`num bold ${inflow - outflow >= 0 ? 'pos' : 'neg'}`}>
             net {money(inflow - outflow)}
           </span>
+          {transferCount > 0 && (
+            <span className="chip">{transferCount} transfer legs excluded from totals</span>
+          )}
         </div>
 
         {selected.size > 0 && (
@@ -180,6 +209,24 @@ export default function Transactions() {
               {state.categories.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.icon} {c.name}
+                </option>
+              ))}
+            </select>
+            <select
+              className="select"
+              style={{ maxWidth: 180 }}
+              value=""
+              onChange={(e) => {
+                if (!e.target.value) return;
+                dispatch({ type: 'tx/status', ids: [...selected], status: e.target.value as TxStatus });
+                toast(`Marked ${selected.size} as ${e.target.value}`);
+                setSelected(new Set());
+              }}
+            >
+              <option value="">Mark as…</option>
+              {(Object.keys(STATUS_LABEL) as TxStatus[]).map((st) => (
+                <option key={st} value={st}>
+                  {STATUS_LABEL[st]}
                 </option>
               ))}
             </select>
@@ -260,7 +307,18 @@ export default function Transactions() {
                           <span className="faint">Joint</span>
                         )}
                       </td>
-                      <td className="tiny faint">{SPLIT_LABEL[t.splitRule]}</td>
+                      <td className="tiny faint">
+                        {t.transferId ? (
+                          <span className="chip">⇄ transfer</span>
+                        ) : (
+                          SPLIT_LABEL[t.splitRule]
+                        )}
+                        {t.status !== 'cleared' && (
+                          <div className={`tiny ${t.status === 'pending' ? 'muted' : 'faint'}`}>
+                            {STATUS_LABEL[t.status]}
+                          </div>
+                        )}
+                      </td>
                       <td className={`right num ${t.amount >= 0 ? 'pos' : ''}`}>
                         {money(t.amount, { sign: true })}
                       </td>
@@ -490,9 +548,31 @@ function TransactionModal({
         </div>
       )}
 
-      <Field label="Note">
-        <input className="input" value={draft.note} onChange={(e) => set('note', e.target.value)} />
-      </Field>
+      {draft.transferId && (
+        <div className="callout warn small">
+          This is one leg of a transfer between your own accounts. Deleting it removes both legs; changing
+          the amount here would leave the two sides disagreeing, so edit it as a pair instead.
+        </div>
+      )}
+
+      <div className="field-row">
+        <Field label="Status" hint="Pending amounts can still change at the bank">
+          <select
+            className="select"
+            value={draft.status}
+            onChange={(e) => set('status', e.target.value as Transaction['status'])}
+          >
+            {(Object.keys(STATUS_LABEL) as (keyof typeof STATUS_LABEL)[]).map((st) => (
+              <option key={st} value={st}>
+                {STATUS_LABEL[st]}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Note">
+          <input className="input" value={draft.note} onChange={(e) => set('note', e.target.value)} />
+        </Field>
+      </div>
       <Field label="Tags" hint="Space separated — handy for trips, projects or reimbursements">
         <input
           className="input"

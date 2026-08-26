@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useApp } from '../store/store';
-import { averageSurplus, categoryMap, monthSeries, runwayMonths, txInMonths } from '../store/selectors';
+import { averageSurplus, categoryMap, liquidCash, monthSeries, runwayMonths, txInMonths } from '../store/selectors';
 import { monthRange } from '../lib/date';
 import { affordHouse, futureValue, loanPayment, monthsToTarget } from '../lib/projections';
 import { totalMinimums } from '../lib/debt';
@@ -261,9 +261,7 @@ function LifeShock({ surplus, money }: { surplus: number; money: Money }) {
   const lostIncome = Math.round(avgIncome * incomeDrop);
   const newSurplus = surplus - lostIncome - newCost;
   const runway = runwayMonths(state, month);
-  const liquid = state.accounts
-    .filter((a) => !a.archived && ['checking', 'savings', 'cash'].includes(a.type))
-    .reduce((a, b) => a + b.balance, 0);
+  const liquid = liquidCash(state);
   const burn = Math.max(0, -newSurplus);
   const newRunway = burn > 0 ? liquid / burn : Infinity;
   const totalCost = (lostIncome + newCost) * dropMonths;

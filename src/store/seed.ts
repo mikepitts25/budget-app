@@ -71,6 +71,8 @@ export function emptyState(): AppState {
       defaultSplit: 'even',
       savingsRateTarget: 0.2,
       pinnedMonth: '',
+      bigPurchaseThreshold: 25000,
+      safeToSpendBuffer: 50000,
       theme: 'dark',
       onboarded: false,
     },
@@ -83,6 +85,8 @@ export function emptyState(): AppState {
     debts: [],
     netWorth: [],
     mindMaps: [starterMindMap()],
+    rules: [],
+    scheduled: [],
     retirement: {
       currentAge: { [alex.id]: 34, [jordan.id]: 33 },
       retireAge: { [alex.id]: 62, [jordan.id]: 62 },
@@ -174,21 +178,26 @@ export function demoState(): AppState {
     { ...b, name: 'Jordan', color: '#4fd1a5', annualIncome: 7800000 },
   ];
 
+  const targetBalances: Record<string, number> = {};
   const accounts: Account[] = [
-    { id: uid('ac'), name: 'Joint Checking', institution: 'Harbor Bank', type: 'checking', owner: 'joint', balance: 942000, apr: 0.0005, archived: false },
-    { id: uid('ac'), name: 'Emergency Fund', institution: 'Harbor Bank', type: 'savings', owner: 'joint', balance: 1180000, apr: 0.041, archived: false },
-    { id: uid('ac'), name: 'House Fund', institution: 'Harbor Bank', type: 'savings', owner: 'joint', balance: 3640000, apr: 0.042, archived: false },
-    { id: uid('ac'), name: "Alex's Checking", institution: 'Northline', type: 'checking', owner: people[0].id, balance: 318000, apr: 0, archived: false },
-    { id: uid('ac'), name: "Jordan's Checking", institution: 'Northline', type: 'checking', owner: people[1].id, balance: 264000, apr: 0, archived: false },
-    { id: uid('ac'), name: 'Sapphire Card', institution: 'Northline', type: 'credit', owner: 'joint', balance: 412000, apr: 0.2274, archived: false },
-    { id: uid('ac'), name: 'Brokerage', institution: 'Vantage', type: 'investment', owner: 'joint', balance: 4820000, apr: 0, archived: false },
-    { id: uid('ac'), name: "Alex's 401(k)", institution: 'Vantage', type: 'retirement', owner: people[0].id, balance: 14250000, apr: 0, archived: false },
-    { id: uid('ac'), name: "Jordan's 403(b)", institution: 'Vantage', type: 'retirement', owner: people[1].id, balance: 9180000, apr: 0, archived: false },
+    { id: uid('ac'), name: 'Joint Checking', institution: 'Harbor Bank', type: 'checking', owner: 'joint', openingBalance: 942000, apr: 0.0005, archived: false },
+    { id: uid('ac'), name: 'Emergency Fund', institution: 'Harbor Bank', type: 'savings', owner: 'joint', openingBalance: 1180000, apr: 0.041, archived: false },
+    { id: uid('ac'), name: 'House Fund', institution: 'Harbor Bank', type: 'savings', owner: 'joint', openingBalance: 3640000, apr: 0.042, archived: false },
+    { id: uid('ac'), name: "Alex's Checking", institution: 'Northline', type: 'checking', owner: people[0].id, openingBalance: 318000, apr: 0, archived: false },
+    { id: uid('ac'), name: "Jordan's Checking", institution: 'Northline', type: 'checking', owner: people[1].id, openingBalance: 264000, apr: 0, archived: false },
+    { id: uid('ac'), name: 'Sapphire Card', institution: 'Northline', type: 'credit', owner: 'joint', openingBalance: 412000, apr: 0.2274, archived: false },
+    { id: uid('ac'), name: 'Brokerage', institution: 'Vantage', type: 'investment', owner: 'joint', openingBalance: 4820000, apr: 0, archived: false },
+    { id: uid('ac'), name: "Alex's 401(k)", institution: 'Vantage', type: 'retirement', owner: people[0].id, openingBalance: 14250000, apr: 0, archived: false },
+    { id: uid('ac'), name: "Jordan's 403(b)", institution: 'Vantage', type: 'retirement', owner: people[1].id, openingBalance: 9180000, apr: 0, archived: false },
   ];
   const joint = accounts[0];
+  const emergencyFund = accounts[1];
+  const houseFund = accounts[2];
   const alexAcc = accounts[3];
   const jordanAcc = accounts[4];
   const card = accounts[5];
+  const brokerage = accounts[6];
+  for (const a of accounts) targetBalances[a.id] = a.openingBalance;
 
   const debts: Debt[] = [
     { id: uid('d'), name: 'Sapphire Card', balance: 412000, apr: 0.2274, minPayment: 12500, kind: 'credit' },
@@ -203,15 +212,38 @@ export function demoState(): AppState {
 
   const pick = <T,>(xs: T[]): T => xs[Math.floor(rand() * xs.length)];
   const between = (lo: number, hi: number) => Math.round(lo + rand() * (hi - lo));
-  const push = (t: Omit<Transaction, 'id' | 'splitShares' | 'tags' | 'cleared'> & Partial<Transaction>) => {
+  const push = (
+    t: Partial<Transaction> & Pick<Transaction, 'date' | 'amount' | 'accountId' | 'categoryId' | 'payee'>,
+  ) => {
     if (t.date > today) return;
     transactions.push({
       id: uid('tx'),
+      note: '',
+      paidBy: 'joint',
+      splitRule: 'even',
       splitShares: {},
       tags: [],
-      cleared: true,
+      status: 'cleared',
+      comments: [],
+      approvals: [],
+      private: false,
       ...t,
     } as Transaction);
+  };
+
+  /** Two legs, one id: money leaving one of your accounts and landing in another. */
+  const pushTransfer = (
+    date: string,
+    amount: number,
+    fromId: string,
+    toId: string,
+    payee: string,
+    categoryId: string,
+  ) => {
+    if (date > today) return;
+    const transferId = uid('tr');
+    push({ date, amount: -amount, accountId: fromId, categoryId, payee, transferId, splitRule: 'income' });
+    push({ date, amount, accountId: toId, categoryId, payee, transferId, splitRule: 'income' });
   };
 
   months.forEach((month, monthIndex) => {
@@ -229,10 +261,10 @@ export function demoState(): AppState {
       push({ date: day(11), amount: between(45000, 130000), accountId: jordanAcc.id, categoryId: catId('Side income'), payee: 'Weekend tutoring', note: '', paidBy: people[1].id, splitRule: 'personal' });
     }
 
-    // Transfers into the shared goals.
-    push({ date: day(2), amount: -95000, accountId: joint.id, categoryId: catId('Savings transfer'), payee: 'Transfer to House Fund', note: '', paidBy: 'joint', splitRule: 'income' });
-    push({ date: day(2), amount: -30000, accountId: joint.id, categoryId: catId('Savings transfer'), payee: 'Transfer to Emergency Fund', note: '', paidBy: 'joint', splitRule: 'income' });
-    push({ date: day(6), amount: -60000, accountId: joint.id, categoryId: catId('Investments'), payee: 'Vantage Brokerage', note: 'Automatic investment', paidBy: 'joint', splitRule: 'income' });
+    // Transfers into the shared goals — two legs each, so nothing is double counted.
+    pushTransfer(day(2), 95000, joint.id, houseFund.id, 'Transfer to House Fund', catId('Savings transfer'));
+    pushTransfer(day(2), 30000, joint.id, emergencyFund.id, 'Transfer to Emergency Fund', catId('Savings transfer'));
+    pushTransfer(day(6), 60000, joint.id, brokerage.id, 'Vantage Brokerage', catId('Investments'));
     // Debt service.
     push({ date: day(17), amount: -24800, accountId: alexAcc.id, categoryId: catId('Debt payments'), payee: 'Crestline Student Loans', note: '', paidBy: people[0].id, splitRule: 'personal' });
     push({ date: day(21), amount: -between(15000, 42000), accountId: joint.id, categoryId: catId('Debt payments'), payee: 'Sapphire Card Payment', note: '', paidBy: 'joint', splitRule: 'income' });
@@ -276,6 +308,15 @@ export function demoState(): AppState {
   });
 
   transactions.sort((x, y) => y.date.localeCompare(x.date));
+
+  // Balances are derived, so back out each account's opening figure from the
+  // balance we want it to show today.
+  for (const account of accounts) {
+    const moved = transactions
+      .filter((t) => t.accountId === account.id)
+      .reduce((total, t) => total + t.amount, 0);
+    account.openingBalance = (targetBalances[account.id] ?? 0) - moved;
+  }
 
   const goals: Goal[] = [
     { id: uid('g'), name: 'House down payment', kind: 'house', target: 9000000, saved: 3640000, targetDate: addMonths(currentMonth(), 26) + '-01', monthlyContribution: 95000, accountId: accounts[2].id, priority: 2, expectedReturn: 0.042, notes: '20% on a $450k home plus closing costs.', archived: false },

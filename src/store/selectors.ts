@@ -15,31 +15,28 @@ export const txInMonths = (state: AppState, months: string[]): Transaction[] => 
   return state.transactions.filter((t) => set.has(monthOf(t.date)));
 };
 
-export const income = (txs: Transaction[]): number =>
-  sum(txs.filter((t) => t.amount > 0).map((t) => t.amount));
+export const income = (txs: Transaction[], state?: AppState): number =>
+  sum(
+    txs
+      .filter((t) => t.amount > 0 && !(state && isTransfer(state, t)))
+      .map((t) => t.amount),
+  );
 
 /**
- * Money moved into savings or investments is not consumption — it is the point.
- * Counting it as spending would make every disciplined month look like a bad one.
+ * Money moved between your own accounts, or into savings and investments, is not
+ * consumption — it is the point. Counting it as spending would make every
+ * disciplined month look like an expensive one.
  */
 export const isTransfer = (state: AppState, tx: Transaction): boolean =>
-  categoryMap(state)[tx.categoryId]?.group === 'Savings';
+  Boolean(tx.transferId) || categoryMap(state)[tx.categoryId]?.group === 'Savings';
 
-/** Outflow that was actually consumed, i.e. everything except savings transfers. */
-export const expense = (state: AppState, txs: Transaction[]): number => {
-  const cats = categoryMap(state);
-  return Math.abs(
-    sum(txs.filter((t) => t.amount < 0 && cats[t.categoryId]?.group !== 'Savings').map((t) => t.amount)),
-  );
-};
+/** Outflow that was actually consumed: excludes transfers between your accounts. */
+export const expense = (state: AppState, txs: Transaction[]): number =>
+  Math.abs(sum(txs.filter((t) => t.amount < 0 && !isTransfer(state, t)).map((t) => t.amount)));
 
 /** Outflow that went into savings, investments or goal funding. */
-export const transfers = (state: AppState, txs: Transaction[]): number => {
-  const cats = categoryMap(state);
-  return Math.abs(
-    sum(txs.filter((t) => t.amount < 0 && cats[t.categoryId]?.group === 'Savings').map((t) => t.amount)),
-  );
-};
+export const transfers = (state: AppState, txs: Transaction[]): number =>
+  Math.abs(sum(txs.filter((t) => t.amount < 0 && isTransfer(state, t)).map((t) => t.amount)));
 
 export interface MonthSummary {
   month: string;
@@ -55,7 +52,7 @@ export interface MonthSummary {
 
 export function monthSummary(state: AppState, month: string): MonthSummary {
   const txs = txInMonth(state, month);
-  const inc = income(txs);
+  const inc = income(txs, state);
   const exp = expense(state, txs);
   return {
     month,
@@ -80,12 +77,25 @@ export function spendByCategory(
   const totals = new Map<ID, number>();
   for (const t of txInMonth(state, month)) {
     if (t.amount >= 0) continue;
+    if (t.transferId) continue;
     if (!includeTransfers && cats[t.categoryId]?.group === 'Savings') continue;
     totals.set(t.categoryId, (totals.get(t.categoryId) ?? 0) + Math.abs(t.amount));
   }
   return [...totals.entries()]
     .map(([categoryId, amount]) => ({ categoryId, amount }))
     .sort((a, b) => b.amount - a.amount);
+}
+
+/** Monthly essential spending, averaged over the trailing window. */
+export function essentialMonthly(state: AppState, endMonth: string, months = 3): number {
+  const cats = categoryMap(state);
+  return Math.round(
+    sum(
+      txInMonths(state, monthRange(endMonth, months))
+        .filter((t) => t.amount < 0 && !isTransfer(state, t) && cats[t.categoryId]?.essential)
+        .map((t) => Math.abs(t.amount)),
+    ) / months,
+  );
 }
 
 /** Average monthly spend in a category over the N months ending at `endMonth`. */
@@ -174,31 +184,64 @@ function rolloverBalance(state: AppState, categoryId: ID, month: string): number
 
 export const LIABILITY_TYPES = new Set(['credit', 'loan']);
 
+/**
+ * Live balance for one account: what it opened with, plus everything that has
+ * moved through it since. Nothing writes a balance directly.
+ */
+export function accountBalance(state: AppState, accountId: ID): number {
+  let balance = state.accounts.find((a) => a.id === accountId)?.openingBalance ?? 0;
+  for (const t of state.transactions) if (t.accountId === accountId) balance += t.amount;
+  return balance;
+}
+
+/** Every account's live balance in one pass, for pages that need them all. */
+export function accountBalances(state: AppState): Record<ID, number> {
+  const out: Record<ID, number> = Object.fromEntries(
+    state.accounts.map((a) => [a.id, a.openingBalance]),
+  );
+  for (const t of state.transactions) {
+    if (t.accountId in out) out[t.accountId] += t.amount;
+  }
+  return out;
+}
+
+/** Balance counting only settled money — what the bank would agree with today. */
+export function clearedBalance(state: AppState, accountId: ID): number {
+  let balance = state.accounts.find((a) => a.id === accountId)?.openingBalance ?? 0;
+  for (const t of state.transactions) {
+    if (t.accountId === accountId && t.status !== 'pending') balance += t.amount;
+  }
+  return balance;
+}
+
 export function netWorth(state: AppState): { assets: number; liabilities: number; net: number } {
+  const balances = accountBalances(state);
   let assets = 0;
   let liabilities = 0;
   for (const a of state.accounts) {
     if (a.archived) continue;
-    if (LIABILITY_TYPES.has(a.type)) liabilities += Math.abs(a.balance);
-    else assets += a.balance;
+    const balance = balances[a.id] ?? 0;
+    if (LIABILITY_TYPES.has(a.type)) liabilities += Math.abs(balance);
+    else assets += balance;
   }
   liabilities += state.debts.reduce((acc, d) => acc + Math.max(0, d.balance), 0);
   return { assets, liabilities, net: assets - liabilities };
 }
 
+export const LIQUID_TYPES = new Set(['checking', 'savings', 'cash']);
+
+/** Cash you could actually reach today. */
+export function liquidCash(state: AppState): number {
+  const balances = accountBalances(state);
+  return state.accounts
+    .filter((a) => !a.archived && LIQUID_TYPES.has(a.type))
+    .reduce((total, a) => total + (balances[a.id] ?? 0), 0);
+}
+
 /** Months of essential spending covered by liquid savings. */
 export function runwayMonths(state: AppState, endMonth: string): number {
-  const liquid = state.accounts
-    .filter((a) => !a.archived && (a.type === 'checking' || a.type === 'savings' || a.type === 'cash'))
-    .reduce((a, b) => a + b.balance, 0);
-  const cats = categoryMap(state);
-  const range = monthRange(endMonth, 3);
-  const essential = sum(
-    txInMonths(state, range)
-      .filter((t) => t.amount < 0 && cats[t.categoryId]?.essential)
-      .map((t) => Math.abs(t.amount)),
-  );
-  const monthly = essential / 3;
+  const liquid = liquidCash(state);
+  const monthly = essentialMonthly(state, endMonth, 3);
   return monthly > 0 ? liquid / monthly : 0;
 }
 

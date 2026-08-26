@@ -71,6 +71,7 @@ const readHash = (): PageKey => {
 export default function App() {
   const { state, dispatch, month, setMonth } = useApp();
   const [page, setPage] = useState<PageKey>(readHash);
+  const [navOpen, setNavOpen] = useState(false);
 
   useEffect(() => {
     const onHash = () => setPage(readHash());
@@ -78,9 +79,11 @@ export default function App() {
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
+  // The drawer must never survive a navigation, or it covers the page you chose.
   const go = (key: PageKey) => {
     window.location.hash = key;
     setPage(key);
+    setNavOpen(false);
   };
 
   const entry = NAV.find((n) => n.key === page)!;
@@ -90,7 +93,9 @@ export default function App() {
 
   return (
     <div className="app">
-      <aside className="sidebar">
+      {navOpen && <div className="nav-backdrop" onClick={() => setNavOpen(false)} />}
+
+      <aside className={`sidebar ${navOpen ? 'open' : ''}`}>
         <div className="brand">
           <div className="brand-mark">2L</div>
           <div style={{ minWidth: 0 }}>
@@ -128,6 +133,14 @@ export default function App() {
 
       <main className="main">
         <header className="topbar">
+          <button
+            className="btn ghost sm nav-toggle"
+            onClick={() => setNavOpen((v) => !v)}
+            aria-label="Menu"
+            aria-expanded={navOpen}
+          >
+            ☰
+          </button>
           <div className="topbar-title">
             <h1>{entry.label}</h1>
             <span className="topbar-sub">{entry.subtitle}</span>
@@ -139,7 +152,7 @@ export default function App() {
               ‹
             </button>
             <button
-              className="btn sm"
+              className="btn sm month-label"
               onClick={() => setMonth(currentMonth())}
               title="Jump to the current month"
               style={{ minWidth: 108 }}

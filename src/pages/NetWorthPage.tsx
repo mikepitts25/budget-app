@@ -1,11 +1,27 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useApp } from '../store/store';
-import type { Account, AccountType } from '../store/types';
-import { LIABILITY_TYPES, netWorth } from '../store/selectors';
-import { monthLabel } from '../lib/date';
+import type { Account, AccountType, Transaction } from '../store/types';
+import {
+  accountBalances,
+  clearedBalance,
+  LIABILITY_TYPES,
+  netWorth,
+  txInMonth,
+} from '../store/selectors';
+import { monthLabel, todayISO } from '../lib/date';
 import { uid } from '../lib/id';
 import { sum } from '../lib/money';
-import { Card, ConfirmButton, Empty, Field, MoneyInput, PercentInput, Stat, useToast } from '../components/ui';
+import {
+  Card,
+  ConfirmButton,
+  Empty,
+  Field,
+  Modal,
+  MoneyInput,
+  PercentInput,
+  Stat,
+  useToast,
+} from '../components/ui';
 import { Donut, LineChart, SERIES_COLORS } from '../components/charts';
 
 const TYPE_LABEL: Record<AccountType, string> = {
@@ -20,15 +36,20 @@ const TYPE_LABEL: Record<AccountType, string> = {
 };
 
 export default function NetWorthPage() {
-  const { state, dispatch, money } = useApp();
+  const { state, dispatch, money, month } = useApp();
   const toast = useToast();
   const [showArchived, setShowArchived] = useState(false);
-  const nw = netWorth(state);
-  const accounts = state.accounts.filter((a) => showArchived || !a.archived);
+  const [reconciling, setReconciling] = useState<Account | null>(null);
+  const [transferring, setTransferring] = useState(false);
 
+  const nw = netWorth(state);
+  const balances = useMemo(() => accountBalances(state), [state]);
+  const accounts = state.accounts.filter((a) => showArchived || !a.archived);
   const assets = accounts.filter((a) => !LIABILITY_TYPES.has(a.type));
-  const liabilities = accounts.filter((a) => LIABILITY_TYPES.has(a.type));
   const history = state.netWorth;
+
+  const monthTx = txInMonth(state, month);
+  const movedThisMonth = sum(monthTx.filter((t) => !t.transferId).map((t) => t.amount));
 
   const add = () =>
     dispatch({
@@ -39,7 +60,7 @@ export default function NetWorthPage() {
         institution: '',
         type: 'checking',
         owner: 'joint',
-        balance: 0,
+        openingBalance: 0,
         apr: 0,
         archived: false,
       },
@@ -54,13 +75,11 @@ export default function NetWorthPage() {
         <Stat label="Assets" value={money(nw.assets, { compact: true })} sub={`${assets.length} accounts`} icon="🏦" />
         <Stat label="Liabilities" value={money(nw.liabilities, { compact: true })} sub="Cards, loans and tracked debts" icon="📉" />
         <Stat
-          label="Invested"
-          value={money(
-            sum(accounts.filter((a) => a.type === 'investment' || a.type === 'retirement').map((a) => a.balance)),
-            { compact: true },
-          )}
-          sub="Brokerage and retirement"
-          icon="📈"
+          label="Moved this month"
+          value={money(movedThisMonth, { compact: true, sign: true })}
+          tone={movedThisMonth >= 0 ? 'pos' : 'neg'}
+          sub="Excluding transfers between your own accounts"
+          icon="🔀"
         />
       </div>
 
@@ -105,7 +124,11 @@ export default function NetWorthPage() {
               </div>
             </>
           ) : (
-            <Empty icon="📊" title="Not enough snapshots yet" hint="Take one each month and this becomes the most motivating chart in the app." />
+            <Empty
+              icon="📊"
+              title="Not enough snapshots yet"
+              hint="Take one each month and this becomes the most motivating chart in the app."
+            />
           )}
         </Card>
 
@@ -114,7 +137,7 @@ export default function NetWorthPage() {
             <Donut
               slices={assets.map((a, i) => ({
                 label: a.name,
-                value: Math.max(0, a.balance),
+                value: Math.max(0, balances[a.id] ?? 0),
                 color: SERIES_COLORS[i % SERIES_COLORS.length],
               }))}
               center={money(nw.assets, { compact: true })}
@@ -135,13 +158,16 @@ export default function NetWorthPage() {
 
       <Card
         title="Accounts"
-        hint="Balances feed net worth, the emergency runway and the rate-arbitrage findings"
+        hint="Balances are derived: opening balance plus every transaction. Nothing writes a balance directly, so the ledger and the number can never disagree."
         actions={
           <div className="row gap-6">
             <label className="tiny faint row gap-4">
               <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
               show archived
             </label>
+            <button className="btn sm" onClick={() => setTransferring(true)}>
+              ⇄ Transfer
+            </button>
             <button className="btn primary sm" onClick={add}>
               + Add account
             </button>
@@ -153,92 +179,320 @@ export default function NetWorthPage() {
             <thead>
               <tr>
                 <th>Name</th>
-                <th style={{ width: 130 }}>Institution</th>
-                <th style={{ width: 130 }}>Type</th>
-                <th style={{ width: 130 }}>Owner</th>
-                <th style={{ width: 140 }}>Balance</th>
-                <th style={{ width: 100 }}>Rate</th>
-                <th style={{ width: 90 }} />
+                <th style={{ width: 120 }}>Institution</th>
+                <th style={{ width: 120 }}>Type</th>
+                <th style={{ width: 110 }}>Owner</th>
+                <th style={{ width: 130 }}>Opening</th>
+                <th className="right" style={{ width: 130 }}>Balance now</th>
+                <th style={{ width: 90 }}>Rate</th>
+                <th style={{ width: 130 }} />
               </tr>
             </thead>
             <tbody>
-              {accounts.map((a) => (
-                <tr key={a.id} style={a.archived ? { opacity: 0.55 } : undefined}>
-                  <td>
-                    <input className="input" value={a.name} onChange={(e) => patch(a.id, { name: e.target.value })} />
-                  </td>
-                  <td>
-                    <input
-                      className="input"
-                      value={a.institution}
-                      onChange={(e) => patch(a.id, { institution: e.target.value })}
-                    />
-                  </td>
-                  <td>
-                    <select
-                      className="select"
-                      value={a.type}
-                      onChange={(e) => patch(a.id, { type: e.target.value as AccountType })}
-                    >
-                      {(Object.keys(TYPE_LABEL) as AccountType[]).map((t) => (
-                        <option key={t} value={t}>
-                          {TYPE_LABEL[t]}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                  <td>
-                    <select
-                      className="select"
-                      value={a.owner}
-                      onChange={(e) => patch(a.id, { owner: e.target.value })}
-                    >
-                      <option value="joint">Joint</option>
-                      {state.people.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                  <td>
-                    <MoneyInput value={a.balance} onChange={(c) => patch(a.id, { balance: c })} />
-                  </td>
-                  <td>
-                    <PercentInput value={a.apr} onChange={(v) => patch(a.id, { apr: v })} />
-                  </td>
-                  <td className="right">
-                    <div className="row gap-4" style={{ justifyContent: 'flex-end' }}>
-                      <button
-                        className="btn ghost sm"
-                        title={a.archived ? 'Restore' : 'Archive'}
-                        onClick={() => patch(a.id, { archived: !a.archived })}
+              {accounts.map((a) => {
+                const live = balances[a.id] ?? 0;
+                const drift = a.lastReconciled ? live - a.lastReconciled.balance : null;
+                return (
+                  <tr key={a.id} style={a.archived ? { opacity: 0.55 } : undefined}>
+                    <td>
+                      <input className="input" value={a.name} onChange={(e) => patch(a.id, { name: e.target.value })} />
+                      {a.lastReconciled && (
+                        <div className="tiny faint mt-8">
+                          Reconciled {a.lastReconciled.date}
+                          {drift !== null && drift !== 0 && ` · ${money(drift, { sign: true })} since`}
+                        </div>
+                      )}
+                    </td>
+                    <td>
+                      <input
+                        className="input"
+                        value={a.institution}
+                        onChange={(e) => patch(a.id, { institution: e.target.value })}
+                      />
+                    </td>
+                    <td>
+                      <select
+                        className="select"
+                        value={a.type}
+                        onChange={(e) => patch(a.id, { type: e.target.value as AccountType })}
                       >
-                        {a.archived ? '↺' : '📦'}
-                      </button>
-                      <ConfirmButton
-                        onConfirm={() => {
-                          dispatch({ type: 'account/remove', id: a.id });
-                          toast('Account and its transactions removed');
-                        }}
-                      >
-                        ✕
-                      </ConfirmButton>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                        {(Object.keys(TYPE_LABEL) as AccountType[]).map((t) => (
+                          <option key={t} value={t}>
+                            {TYPE_LABEL[t]}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td>
+                      <select className="select" value={a.owner} onChange={(e) => patch(a.id, { owner: e.target.value })}>
+                        <option value="joint">Joint</option>
+                        {state.people.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td>
+                      <MoneyInput value={a.openingBalance} onChange={(c) => patch(a.id, { openingBalance: c })} />
+                    </td>
+                    <td className="right num bold">{money(live)}</td>
+                    <td>
+                      <PercentInput value={a.apr} onChange={(v) => patch(a.id, { apr: v })} />
+                    </td>
+                    <td className="right">
+                      <div className="row gap-4" style={{ justifyContent: 'flex-end' }}>
+                        <button className="btn ghost sm" title="Reconcile" onClick={() => setReconciling(a)}>
+                          ⚖
+                        </button>
+                        <button
+                          className="btn ghost sm"
+                          title={a.archived ? 'Restore' : 'Archive'}
+                          onClick={() => patch(a.id, { archived: !a.archived })}
+                        >
+                          {a.archived ? '↺' : '📦'}
+                        </button>
+                        <ConfirmButton
+                          onConfirm={() => {
+                            dispatch({ type: 'account/remove', id: a.id });
+                            toast('Account and its transactions removed');
+                          }}
+                        >
+                          ✕
+                        </ConfirmButton>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
-        {liabilities.length > 0 && (
-          <Field label="">
-            <p className="tiny faint">
-              Credit cards and loans count as liabilities — enter what you owe as a positive balance.
-            </p>
-          </Field>
-        )}
       </Card>
+
+      {reconciling && <ReconcileModal account={reconciling} onClose={() => setReconciling(null)} />}
+      {transferring && <TransferModal onClose={() => setTransferring(false)} />}
     </div>
+  );
+}
+
+/** Compare the ledger against a real statement and settle the difference. */
+function ReconcileModal({ account, onClose }: { account: Account; onClose: () => void }) {
+  const { state, dispatch, money } = useApp();
+  const toast = useToast();
+  const [statement, setStatement] = useState(clearedBalance(state, account.id));
+  const [date, setDate] = useState(todayISO());
+
+  const settled = clearedBalance(state, account.id);
+  const live = accountBalances(state)[account.id] ?? 0;
+  const pending = live - settled;
+  const difference = statement - settled;
+
+  const pendingTx = state.transactions.filter(
+    (t) => t.accountId === account.id && t.status === 'pending',
+  );
+
+  return (
+    <Modal
+      title={`Reconcile ${account.name}`}
+      onClose={onClose}
+      footer={
+        <>
+          <div className="spacer" />
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="btn primary"
+            onClick={() => {
+              // A leftover difference becomes one honest adjusting entry rather
+              // than a silently edited balance.
+              const adjustment: Transaction | undefined =
+                difference !== 0
+                  ? {
+                      id: uid('tx'),
+                      date,
+                      amount: difference,
+                      accountId: account.id,
+                      categoryId:
+                        state.categories.find((c) => c.name === 'Miscellaneous')?.id ??
+                        state.categories[0].id,
+                      payee: 'Reconciliation adjustment',
+                      note: `Statement ${money(statement)} vs ledger ${money(settled)}`,
+                      paidBy: 'joint',
+                      splitRule: 'income',
+                      splitShares: {},
+                      tags: ['reconciliation'],
+                      status: 'reconciled',
+                      comments: [],
+                      approvals: [],
+                      private: false,
+                    }
+                  : undefined;
+              dispatch({ type: 'account/reconcile', id: account.id, date, balance: statement, adjustment });
+              dispatch({
+                type: 'tx/status',
+                ids: state.transactions
+                  .filter((t) => t.accountId === account.id && t.status === 'cleared' && t.date <= date)
+                  .map((t) => t.id),
+                status: 'reconciled',
+              });
+              toast(
+                difference === 0
+                  ? 'Reconciled — the ledger matches the statement exactly'
+                  : `Reconciled with a ${money(difference, { sign: true })} adjustment`,
+              );
+              onClose();
+            }}
+          >
+            {difference === 0 ? 'Mark reconciled' : `Adjust by ${money(difference, { sign: true })}`}
+          </button>
+        </>
+      }
+    >
+      <div className="field-row">
+        <Field label="Statement date">
+          <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        </Field>
+        <Field label="Statement balance" hint="What the bank says today">
+          <MoneyInput value={statement} onChange={setStatement} />
+        </Field>
+      </div>
+
+      <div className="col gap-6">
+        <div className="row small">
+          <span>Cleared in your ledger</span>
+          <span className="spacer" />
+          <span className="num">{money(settled)}</span>
+        </div>
+        <div className="row small">
+          <span>Pending, not yet settled</span>
+          <span className="spacer" />
+          <span className="num faint">{money(pending)}</span>
+        </div>
+        <div className="divider" />
+        <div className="row">
+          <span className="bold">Difference</span>
+          <span className="spacer" />
+          <span className={`num bold ${difference === 0 ? 'pos' : 'neg'}`}>{money(difference, { sign: true })}</span>
+        </div>
+      </div>
+
+      {difference !== 0 && (
+        <div className="callout warn">
+          A difference usually means a missing transaction, a duplicate, or a wrong amount. Fix it in the
+          ledger if you can find it — posting an adjustment is the last resort, and it will show up in your
+          spending as Miscellaneous.
+        </div>
+      )}
+
+      {pendingTx.length > 0 && (
+        <div>
+          <div className="card-title mb-8">Still pending</div>
+          {pendingTx.slice(0, 8).map((t) => (
+            <div key={t.id} className="list-row">
+              <span className="small truncate">{t.payee}</span>
+              <span className="spacer" />
+              <span className="small num">{money(t.amount, { sign: true })}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+/** Move money between your own accounts as one two-legged entry. */
+function TransferModal({ onClose }: { onClose: () => void }) {
+  const { state, dispatch, money } = useApp();
+  const toast = useToast();
+  const live = accountBalances(state);
+  const [amount, setAmount] = useState(0);
+  const [fromAccountId, setFrom] = useState(state.accounts[0]?.id ?? '');
+  const [toAccountId, setTo] = useState(state.accounts[1]?.id ?? '');
+  const [date, setDate] = useState(todayISO());
+  const [categoryId, setCategory] = useState(
+    state.categories.find((c) => c.name === 'Savings transfer')?.id ?? state.categories[0]?.id ?? '',
+  );
+
+  const valid = amount > 0 && fromAccountId && toAccountId && fromAccountId !== toAccountId;
+
+  return (
+    <Modal
+      title="Transfer between accounts"
+      onClose={onClose}
+      footer={
+        <>
+          <div className="spacer" />
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="btn primary"
+            disabled={!valid}
+            onClick={() => {
+              dispatch({
+                type: 'tx/transfer',
+                transfer: {
+                  date,
+                  amount,
+                  fromAccountId,
+                  toAccountId,
+                  categoryId,
+                  payee: `Transfer to ${state.accounts.find((a) => a.id === toAccountId)?.name ?? 'account'}`,
+                },
+              });
+              toast(`Transferred ${money(amount)}`);
+              onClose();
+            }}
+          >
+            Transfer
+          </button>
+        </>
+      }
+    >
+      <p className="small muted">
+        A transfer is not income and not spending — it is the same money in a different place. Both sides
+        are recorded, so your reports stay honest and both balances move.
+      </p>
+      <div className="field-row">
+        <Field label="From">
+          <select className="select" value={fromAccountId} onChange={(e) => setFrom(e.target.value)}>
+            {state.accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name} · {money(live[a.id] ?? 0)}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="To">
+          <select className="select" value={toAccountId} onChange={(e) => setTo(e.target.value)}>
+            {state.accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name} · {money(live[a.id] ?? 0)}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+      <div className="field-row three">
+        <Field label="Amount">
+          <MoneyInput value={amount} onChange={setAmount} />
+        </Field>
+        <Field label="Date">
+          <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        </Field>
+        <Field label="Category" hint="For reporting only">
+          <select className="select" value={categoryId} onChange={(e) => setCategory(e.target.value)}>
+            {state.categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.icon} {c.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+      {fromAccountId === toAccountId && <div className="callout bad">Pick two different accounts.</div>}
+    </Modal>
   );
 }

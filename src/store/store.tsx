@@ -4,6 +4,7 @@ import type {
   AppState,
   BudgetLine,
   Category,
+  Comment,
   Debt,
   Goal,
   ID,
@@ -13,15 +14,20 @@ import type {
   NetWorthSnapshot,
   Person,
   RetirementPlan,
+  Rule,
+  Scheduled,
   Settings,
   Transaction,
+  TxStatus,
 } from './types';
 import { demoState, emptyState } from './seed';
 import { categoryAverage, netWorth } from './selectors';
 import { addMonths, currentMonth } from '../lib/date';
 import { formatMoney } from '../lib/money';
+import { uid } from '../lib/id';
 
 const STORAGE_KEY = 'two-ledgers:v1';
+export const SCHEMA_VERSION = 2;
 
 export type Action =
   | { type: 'load'; state: AppState }
@@ -40,6 +46,19 @@ export type Action =
   | { type: 'tx/remove'; id: ID }
   | { type: 'tx/removeMany'; ids: ID[] }
   | { type: 'tx/bulkCategory'; ids: ID[]; categoryId: ID }
+  | { type: 'tx/status'; ids: ID[]; status: TxStatus }
+  | { type: 'tx/comment'; id: ID; comment: Comment }
+  | { type: 'tx/approve'; id: ID; personId: ID }
+  | { type: 'tx/transfer'; transfer: TransferInput }
+  | { type: 'account/reconcile'; id: ID; date: string; balance: number; adjustment?: Transaction }
+  | { type: 'rule/add'; rule: Rule }
+  | { type: 'rule/update'; id: ID; patch: Partial<Rule> }
+  | { type: 'rule/remove'; id: ID }
+  | { type: 'rule/apply'; txs: Transaction[] }
+  | { type: 'scheduled/add'; item: Scheduled }
+  | { type: 'scheduled/addMany'; items: Scheduled[] }
+  | { type: 'scheduled/update'; id: ID; patch: Partial<Scheduled> }
+  | { type: 'scheduled/remove'; id: ID }
   | { type: 'budget/set'; line: BudgetLine }
   | { type: 'budget/copy'; from: string; to: string }
   | { type: 'budget/autofill'; month: string; lookback: number }
@@ -67,10 +86,58 @@ export type Action =
 const patchIn = <T extends { id: ID }>(xs: T[], id: ID, patch: Partial<T>): T[] =>
   xs.map((x) => (x.id === id ? { ...x, ...patch } : x));
 
+export interface TransferInput {
+  date: string;
+  /** Positive cents leaving `fromAccountId` and arriving in `toAccountId`. */
+  amount: number;
+  fromAccountId: ID;
+  toAccountId: ID;
+  categoryId: ID;
+  payee: string;
+  note?: string;
+}
+
+/** Builds the two mirrored legs that make up one transfer. */
+export function buildTransfer(input: TransferInput): [Transaction, Transaction] {
+  const transferId = uid('tr');
+  const base = {
+    date: input.date,
+    categoryId: input.categoryId,
+    payee: input.payee,
+    note: input.note ?? '',
+    paidBy: 'joint' as const,
+    splitRule: 'income' as const,
+    splitShares: {},
+    tags: ['transfer'],
+    status: 'cleared' as const,
+    comments: [],
+    approvals: [],
+    private: false,
+    transferId,
+  };
+  return [
+    { ...base, id: uid('tx'), amount: -Math.abs(input.amount), accountId: input.fromAccountId },
+    { ...base, id: uid('tx'), amount: Math.abs(input.amount), accountId: input.toAccountId },
+  ];
+}
+
+/** Ids of both legs, given any transaction that might be one. */
+function transferSiblings(state: AppState, ids: Set<ID>): Set<ID> {
+  const transferIds = new Set(
+    state.transactions.filter((t) => ids.has(t.id) && t.transferId).map((t) => t.transferId!),
+  );
+  if (!transferIds.size) return ids;
+  const out = new Set(ids);
+  for (const t of state.transactions) {
+    if (t.transferId && transferIds.has(t.transferId)) out.add(t.id);
+  }
+  return out;
+}
+
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case 'load':
-      return action.state;
+      return migrate(action.state as unknown);
     case 'reset':
       return action.demo ? demoState() : emptyState();
     case 'settings/update':
@@ -119,11 +186,75 @@ export function reducer(state: AppState, action: Action): AppState {
         transactions: sortTx(patchIn(state.transactions, action.id, action.patch)),
       };
     case 'tx/remove':
-      return { ...state, transactions: state.transactions.filter((t) => t.id !== action.id) };
     case 'tx/removeMany': {
-      const ids = new Set(action.ids);
+      const requested = new Set(action.type === 'tx/remove' ? [action.id] : action.ids);
+      const ids = transferSiblings(state, requested);
       return { ...state, transactions: state.transactions.filter((t) => !ids.has(t.id)) };
     }
+    case 'tx/status': {
+      const ids = new Set(action.ids);
+      return {
+        ...state,
+        transactions: state.transactions.map((t) =>
+          ids.has(t.id) ? { ...t, status: action.status } : t,
+        ),
+      };
+    }
+    case 'tx/comment':
+      return {
+        ...state,
+        transactions: state.transactions.map((t) =>
+          t.id === action.id ? { ...t, comments: [...t.comments, action.comment] } : t,
+        ),
+      };
+    case 'tx/approve':
+      return {
+        ...state,
+        transactions: state.transactions.map((t) =>
+          t.id === action.id && !t.approvals.includes(action.personId)
+            ? { ...t, approvals: [...t.approvals, action.personId] }
+            : t,
+        ),
+      };
+    case 'tx/transfer':
+      return {
+        ...state,
+        transactions: sortTx([...buildTransfer(action.transfer), ...state.transactions]),
+      };
+
+    case 'account/reconcile':
+      return {
+        ...state,
+        accounts: patchIn(state.accounts, action.id, {
+          lastReconciled: { date: action.date, balance: action.balance },
+        }),
+        transactions: action.adjustment
+          ? sortTx([action.adjustment, ...state.transactions])
+          : state.transactions,
+      };
+
+    case 'rule/add':
+      return { ...state, rules: [...state.rules, action.rule] };
+    case 'rule/update':
+      return { ...state, rules: patchIn(state.rules, action.id, action.patch) };
+    case 'rule/remove':
+      return { ...state, rules: state.rules.filter((r) => r.id !== action.id) };
+    case 'rule/apply': {
+      const byId = new Map(action.txs.map((t) => [t.id, t]));
+      return {
+        ...state,
+        transactions: state.transactions.map((t) => byId.get(t.id) ?? t),
+      };
+    }
+
+    case 'scheduled/add':
+      return { ...state, scheduled: [...state.scheduled, action.item] };
+    case 'scheduled/addMany':
+      return { ...state, scheduled: [...state.scheduled, ...action.items] };
+    case 'scheduled/update':
+      return { ...state, scheduled: patchIn(state.scheduled, action.id, action.patch) };
+    case 'scheduled/remove':
+      return { ...state, scheduled: state.scheduled.filter((x) => x.id !== action.id) };
     case 'tx/bulkCategory': {
       const ids = new Set(action.ids);
       return {
@@ -247,14 +378,57 @@ function mapMap(state: AppState, id: ID, fn: (m: MindMap) => MindMap): AppState 
   return { ...state, mindMaps: state.mindMaps.map((m) => (m.id === id ? fn(m) : m)) };
 }
 
+/**
+ * Brings a saved file up to the current schema. v1 stored a typed-in balance per
+ * account and a boolean `cleared` per transaction; v2 derives balances from the
+ * ledger, so each account's opening balance is back-solved from the balance the
+ * user last saw. Migrations are cumulative and must stay idempotent.
+ */
+export function migrate(raw: any): AppState {
+  const base = emptyState();
+  const state: AppState = {
+    ...base,
+    ...raw,
+    settings: { ...base.settings, ...(raw.settings ?? {}) },
+    rules: raw.rules ?? [],
+    scheduled: raw.scheduled ?? [],
+    mindMaps: raw.mindMaps ?? base.mindMaps,
+    dismissedSuggestions: raw.dismissedSuggestions ?? [],
+  };
+
+  const version = raw.version ?? 1;
+
+  state.transactions = (raw.transactions ?? []).map((t: any) => ({
+    ...t,
+    status: t.status ?? (t.cleared === false ? 'pending' : 'cleared'),
+    comments: t.comments ?? [],
+    approvals: t.approvals ?? [],
+    private: t.private ?? false,
+    cleared: undefined,
+  }));
+
+  state.accounts = (raw.accounts ?? []).map((a: any) => {
+    if (a.openingBalance !== undefined) return { ...a };
+    // v1 stored the live balance; recover the opening figure from the ledger so
+    // the number on screen does not jump after upgrading.
+    const moved = state.transactions
+      .filter((t) => t.accountId === a.id)
+      .reduce((total, t) => total + t.amount, 0);
+    const { balance, ...rest } = a;
+    return { ...rest, openingBalance: (balance ?? 0) - moved };
+  });
+
+  state.version = Math.max(version, SCHEMA_VERSION);
+  return state;
+}
+
 export function loadState(): AppState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return demoState();
-    const parsed = JSON.parse(raw) as AppState;
+    const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.people)) return demoState();
-    // Forward-compatible defaults for fields added after a save was written.
-    return { ...emptyState(), ...parsed, settings: { ...emptyState().settings, ...parsed.settings } };
+    return migrate(parsed);
   } catch {
     return demoState();
   }

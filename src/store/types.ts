@@ -28,10 +28,16 @@ export interface Account {
   type: AccountType;
   /** 'joint' or a Person id. */
   owner: ID | 'joint';
-  /** Current balance in cents. Liabilities are stored as a positive amount owed. */
-  balance: number;
+  /**
+   * Balance before the first tracked transaction, in cents. The live balance is
+   * derived as openingBalance + the sum of this account's transactions, so the
+   * ledger and the balance can never disagree.
+   */
+  openingBalance: number;
   /** Annual interest rate as a decimal (0.0499 = 4.99%). Relevant for credit/loan/savings. */
   apr: number;
+  /** Statement balance from the last reconciliation, for drift detection. */
+  lastReconciled?: { date: string; balance: number };
   archived: boolean;
 }
 
@@ -62,6 +68,21 @@ export interface Category {
   archived: boolean;
 }
 
+/** A remark one partner left on a transaction, so money talk stays in context. */
+export interface Comment {
+  id: ID;
+  personId: ID;
+  text: string;
+  at: string;
+}
+
+/**
+ * pending  — seen but not settled at the bank yet; amount may still change.
+ * cleared  — posted and confirmed.
+ * reconciled — matched against a statement and frozen.
+ */
+export type TxStatus = 'pending' | 'cleared' | 'reconciled';
+
 /** How the cost of a transaction is shared between partners. */
 export type SplitRule = 'even' | 'income' | 'custom' | 'personal';
 
@@ -81,9 +102,79 @@ export interface Transaction {
   /** For 'custom' and 'personal': personId -> share weight (0..1, summing to 1). */
   splitShares: Record<ID, number>;
   tags: string[];
-  cleared: boolean;
+  status: TxStatus;
   /** Set when the transaction was generated from / matched to a recurring series. */
   recurringId?: ID;
+  /**
+   * Both legs of a transfer share this id. Transfer legs are movement between
+   * your own accounts, so they are excluded from income and spending entirely.
+   */
+  transferId?: ID;
+  /** Stable id from the source file or provider (OFX FITID, Plaid transaction id). */
+  externalId?: string;
+  /** Conversation between partners about this transaction. */
+  comments: Comment[];
+  /** Person ids who have signed off, for spending above the agreed threshold. */
+  approvals: ID[];
+  /** Visible only to whoever paid, for couples who keep some spending private. */
+  private: boolean;
+}
+
+/** A matcher/action pair that files transactions automatically. */
+export interface Rule {
+  id: ID;
+  name: string;
+  enabled: boolean;
+  /** Lower runs first; the last matching rule to set a field wins. */
+  order: number;
+  match: {
+    payeeContains?: string;
+    payeeRegex?: string;
+    noteContains?: string;
+    accountId?: ID;
+    /** Cents, compared against the absolute amount. */
+    minAmount?: number;
+    maxAmount?: number;
+    direction?: 'in' | 'out';
+  };
+  set: {
+    categoryId?: ID;
+    splitRule?: SplitRule;
+    paidBy?: ID | 'joint';
+    addTags?: string[];
+    private?: boolean;
+    renamePayee?: string;
+  };
+}
+
+export type Cadence =
+  | 'weekly'
+  | 'biweekly'
+  | 'semimonthly'
+  | 'monthly'
+  | 'quarterly'
+  | 'annual';
+
+/** A known future commitment — what makes a cash-flow forecast possible. */
+export interface Scheduled {
+  id: ID;
+  name: string;
+  /** Signed cents: negative for bills, positive for income. */
+  amount: number;
+  accountId: ID;
+  categoryId: ID;
+  cadence: Cadence;
+  /** Next occurrence, ISO date. */
+  nextDate: string;
+  /** Stop generating after this date, if set. */
+  endDate?: string;
+  paidBy: ID | 'joint';
+  splitRule: SplitRule;
+  enabled: boolean;
+  /** True when proposed by the recurrence detector rather than entered by hand. */
+  autoDetected: boolean;
+  /** Detector key it came from, so a series is only ever proposed once. */
+  sourceKey?: string;
 }
 
 /** A planned envelope amount for one category in one month. */
@@ -202,6 +293,10 @@ export interface Settings {
   savingsRateTarget: number;
   /** Month the app opens on, 'YYYY-MM'. Empty = current month. */
   pinnedMonth: string;
+  /** Spending above this needs both partners to acknowledge it. 0 disables. */
+  bigPurchaseThreshold: number;
+  /** Buffer kept in checking when computing safe-to-spend, in cents. */
+  safeToSpendBuffer: number;
   theme: 'dark' | 'light';
   onboarded: boolean;
 }
@@ -218,6 +313,8 @@ export interface AppState {
   debts: Debt[];
   netWorth: NetWorthSnapshot[];
   mindMaps: MindMap[];
+  rules: Rule[];
+  scheduled: Scheduled[];
   retirement: RetirementPlan;
   /** Savings suggestions the couple dismissed, by suggestion key. */
   dismissedSuggestions: string[];

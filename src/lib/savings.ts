@@ -3,6 +3,7 @@ import { addMonths, monthOf, monthRange, todayISO } from './date';
 import { formatMoney, sum } from './money';
 import { detectRecurring, staleSeries, type RecurringSeries } from './recurring';
 import {
+  accountBalances,
   averageSurplus,
   categoryMap,
   expense,
@@ -289,10 +290,11 @@ function rateFindings(state: AppState, month: string): Suggestion[] {
   const m = (c: number) => money(state, c);
   const HYSA = 0.042;
 
+  const balances = accountBalances(state);
   const idle = state.accounts.filter(
-    (a) => !a.archived && (a.type === 'checking' || a.type === 'cash') && a.balance > 0,
+    (a) => !a.archived && (a.type === 'checking' || a.type === 'cash') && (balances[a.id] ?? 0) > 0,
   );
-  const idleCash = sum(idle.map((a) => a.balance));
+  const idleCash = sum(idle.map((a) => balances[a.id] ?? 0));
   const monthlyExpense = monthSeries(state, month, 3).reduce((a, s) => a + s.expense, 0) / 3;
   const buffer = Math.round(monthlyExpense * 1.5);
   const movable = idleCash - buffer;
@@ -328,13 +330,16 @@ function rateFindings(state: AppState, month: string): Suggestion[] {
     }
   }
 
-  const cards = state.accounts.filter((a) => a.type === 'credit' && a.balance > 0 && a.apr > 0.15);
+  const cards = state.accounts.filter(
+    (a) => a.type === 'credit' && Math.abs(balances[a.id] ?? 0) > 0 && a.apr > 0.15,
+  );
   for (const c of cards) {
-    const saving = Math.round((c.balance * (c.apr - 0.0)) / 12 / 2);
+    const owed = Math.abs(balances[c.id] ?? 0);
+    const saving = Math.round((owed * c.apr) / 12 / 2);
     if (saving < 1000) continue;
     out.push({
       key: `balance-transfer:${c.id}`,
-      title: `${c.name} carries ${m(c.balance)} at ${(c.apr * 100).toFixed(1)}%`,
+      title: `${c.name} carries ${m(owed)} at ${(c.apr * 100).toFixed(1)}%`,
       detail: `A 0% balance-transfer offer (typically 3% fee, 12–18 months) would pause the interest. Even half a year of relief is worth roughly ${m(saving * 6)}.`,
       monthlySaving: saving,
       annualSaving: saving * 12,

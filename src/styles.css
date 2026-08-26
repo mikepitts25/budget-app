@@ -149,8 +149,36 @@ a { color: var(--accent); }
 }
 @media (max-width: 760px) {
   .grid.cols-2, .grid.cols-4 { grid-template-columns: minmax(0, 1fr); }
-  .sidebar { display: none; }
-  .content { padding: 16px; }
+  .content { padding: 14px 14px 80px; }
+  .topbar { padding: 10px 14px; gap: 8px; }
+  .topbar-title h1 { font-size: 18px; }
+  .topbar-sub { display: none; }
+
+  /* The sidebar becomes a drawer rather than disappearing. */
+  .sidebar {
+    position: fixed; z-index: 60; top: 0; bottom: 0; left: 0;
+    height: 100dvh; transform: translateX(-100%);
+    transition: transform 200ms ease; box-shadow: var(--shadow-lg);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .nav-backdrop { display: block; }
+  .nav-toggle { display: inline-flex; }
+  .card { padding: 14px; }
+  .modal-body { padding: 14px; }
+  .stat-value { font-size: 22px; }
+}
+
+.nav-toggle { display: none; }
+.nav-backdrop {
+  display: none; position: fixed; inset: 0; z-index: 55;
+  background: rgba(6, 8, 16, 0.55); backdrop-filter: blur(2px);
+}
+
+/* Below the drawer breakpoint the month stepper needs to stay thumb-reachable. */
+@media (max-width: 480px) {
+  .topbar .month-label { min-width: 84px; font-size: 12px; }
+  .grid.cols-3 { grid-template-columns: minmax(0, 1fr); }
+  .table-wrap { margin: 0 -14px; padding: 0 14px; }
 }
 
 /* -------------------------------- cards --------------------------------- */

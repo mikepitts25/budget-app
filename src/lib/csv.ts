@@ -168,7 +168,10 @@ export function rowsToTransactions(
       splitRule: 'even',
       splitShares: {},
       tags: ['imported'],
-      cleared: true,
+      status: 'cleared',
+      comments: [],
+      approvals: [],
+      private: false,
     });
   }
   return { transactions: out, skipped, duplicates };
