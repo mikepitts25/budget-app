@@ -15,13 +15,24 @@ export default function RulesManager() {
   const { state, dispatch, money } = useApp();
   const toast = useToast();
   const [editing, setEditing] = useState<Rule | null>(null);
+  const [includeCorrected, setIncludeCorrected] = useState(false);
 
   const rules = [...state.rules].sort((a, b) => a.order - b.order);
+  const correctedCount = state.transactions.filter((t) => t.categorySource === 'manual').length;
 
   const runAll = () => {
-    const { changed, hits } = runRules(state.rules, state.transactions, state.people);
+    const { changed, hits } = runRules(state.rules, state.transactions, state.people, {
+      respectManual: !includeCorrected,
+    });
     if (!changed.length) {
-      toast('Every transaction already matches your rules');
+      const blocked = runRules(state.rules, state.transactions, state.people, {
+        respectManual: false,
+      }).changed.length;
+      toast(
+        blocked > 0
+          ? `${blocked} would change, but their categories were set by hand — tick "overwrite my corrections" to include them`
+          : 'Every transaction already matches your rules',
+      );
       return;
     }
     dispatch({ type: 'rule/apply', txs: changed });
@@ -33,9 +44,20 @@ export default function RulesManager() {
   return (
     <Card
       title="Rules"
-      hint="Rules run on import and on anything you type in. Later rules override earlier ones, so a broad rule plus a narrow exception works the way you would expect."
+      hint={`Rules run on import and on anything you type in. Later rules override earlier ones, so a broad rule plus a narrow exception works the way you would expect. Categories you set by hand — ${correctedCount} so far — are left alone unless you say otherwise.`}
       actions={
         <div className="row gap-6">
+          <label
+            className="tiny faint row gap-4"
+            title="Rules normally leave alone any category you set by hand"
+          >
+            <input
+              type="checkbox"
+              checked={includeCorrected}
+              onChange={(e) => setIncludeCorrected(e.target.checked)}
+            />
+            overwrite my corrections
+          </label>
           <button className="btn sm" onClick={runAll} disabled={!rules.length}>
             Apply to all history
           </button>

@@ -26,11 +26,30 @@ export function matches(rule: Rule, tx: Transaction): boolean {
   return Object.keys(m).some((k) => m[k as keyof typeof m] !== undefined && m[k as keyof typeof m] !== '');
 }
 
+export interface ApplyOptions {
+  /**
+   * Never overwrite a category a person chose. On by default, and the reason
+   * "apply to all history" cannot quietly undo every correction ever made.
+   */
+  respectManual?: boolean;
+}
+
 /** Applies one rule's actions, returning a new transaction. */
-export function applyRule(rule: Rule, tx: Transaction, people: { id: ID }[]): Transaction {
+export function applyRule(
+  rule: Rule,
+  tx: Transaction,
+  people: { id: ID }[],
+  opts: ApplyOptions = {},
+): Transaction {
+  const respectManual = opts.respectManual !== false;
   const next: Transaction = { ...tx };
   const s = rule.set;
-  if (s.categoryId) next.categoryId = s.categoryId;
+  if (s.categoryId && !(respectManual && tx.categorySource === 'manual')) {
+    next.categoryId = s.categoryId;
+    next.categorySource = 'rule';
+    next.categoryRuleId = rule.id;
+    next.categoryConfidence = undefined;
+  }
   if (s.paidBy) next.paidBy = s.paidBy;
   if (s.renamePayee) next.payee = s.renamePayee;
   if (s.private !== undefined) next.private = s.private;
@@ -64,6 +83,7 @@ export function runRules(
   rules: Rule[],
   txs: Transaction[],
   people: { id: ID }[],
+  opts: ApplyOptions = {},
 ): RuleRun {
   const ordered = rules.filter((r) => r.enabled).sort((a, b) => a.order - b.order);
   const hits: Record<ID, number> = Object.fromEntries(ordered.map((r) => [r.id, 0]));
@@ -74,7 +94,7 @@ export function runRules(
     let touched = false;
     for (const rule of ordered) {
       if (!matches(rule, next)) continue;
-      const applied = applyRule(rule, next, people);
+      const applied = applyRule(rule, next, people, opts);
       if (JSON.stringify(applied) !== JSON.stringify(next)) {
         next = applied;
         touched = true;
@@ -86,12 +106,22 @@ export function runRules(
   return { changed, hits };
 }
 
-/** Applies rules to transactions on their way in, before they hit the store. */
+/**
+ * Applies rules to transactions on their way in, before they hit the store.
+ *
+ * `respectManual` is off here: a brand-new transaction has no correction to
+ * protect, and its default source of 'manual' only means "nothing automatic has
+ * touched it yet".
+ */
 export const categorizeIncoming = (state: AppState, txs: Transaction[]): Transaction[] => {
   const ordered = state.rules.filter((r) => r.enabled).sort((a, b) => a.order - b.order);
   return txs.map((tx) => {
     let next = tx;
-    for (const rule of ordered) if (matches(rule, next)) next = applyRule(rule, next, state.people);
+    for (const rule of ordered) {
+      if (matches(rule, next)) {
+        next = applyRule(rule, next, state.people, { respectManual: false });
+      }
+    }
     return next;
   });
 };

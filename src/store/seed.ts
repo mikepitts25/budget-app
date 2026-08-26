@@ -358,6 +358,38 @@ export function demoState(): AppState {
     if (monthIndex === 7) push({ date: day(16), amount: -96000, accountId: joint.id, categoryId: catId('Home maintenance'), payee: 'Ace Plumbing', note: 'Water heater', paidBy: 'joint', splitRule: 'income' });
   });
 
+  // A real ledger is a mixture: payees seen many times were learned confidently,
+  // one-offs fell through to the fallback category and are worth a look, and a
+  // few were filed by hand. Marking everything 'manual' would leave the review
+  // queue permanently empty and misreport how the categories got there.
+  const payeeCounts = new Map<string, number>();
+  for (const t of transactions) {
+    const key = t.payee.toLowerCase();
+    payeeCounts.set(key, (payeeCounts.get(key) ?? 0) + 1);
+  }
+  for (const t of transactions) {
+    if (t.transferId) continue;
+    const seen = payeeCounts.get(t.payee.toLowerCase()) ?? 1;
+    if (seen >= 6) {
+      t.categorySource = 'learned';
+      t.categoryConfidence = 0.94;
+    } else if (seen >= 3) {
+      t.categorySource = 'learned';
+      t.categoryConfidence = 0.7;
+    } else {
+      t.categorySource = 'default';
+      t.categoryConfidence = undefined;
+    }
+  }
+  // Rent, salary and the loan payment are the ones anybody would have set
+  // themselves.
+  for (const t of transactions) {
+    if (/Arrendamientos|Payroll|School District|Student Loans/i.test(t.payee)) {
+      t.categorySource = 'manual';
+      t.categoryConfidence = undefined;
+    }
+  }
+
   transactions.sort((x, y) => y.date.localeCompare(x.date));
 
   // Balances are derived, so back out each account's opening figure from the

@@ -12,6 +12,8 @@ import { categorizeIncoming, ruleFromTransaction } from '../lib/rules';
 import { activePerson, needsApproval, visiblePayee } from '../lib/couples';
 import { isMultiCurrency } from '../lib/currency';
 import { RuleModal } from '../components/RulesManager';
+import LabelReview from '../components/LabelReview';
+import { explainLabel, isAutomatic } from '../lib/labels';
 import { Card, ConfirmButton, Empty, Field, Modal, MoneyInput, Segmented, useToast } from '../components/ui';
 import { canSeeDetail as canSee } from '../lib/couples';
 
@@ -40,6 +42,7 @@ export default function Transactions() {
   const [categoryFilter, setCategoryFilter] = useState<ID | 'all'>('all');
   const [personFilter, setPersonFilter] = useState<ID | 'all' | 'joint'>('all');
   const [statusFilter, setStatusFilter] = useState<TxStatus | 'all'>('all');
+  const [autoOnly, setAutoOnly] = useState(false);
   const [scope, setScope] = useState<'month' | 'all'>('month');
   const [selected, setSelected] = useState<Set<ID>>(new Set());
   const [editing, setEditing] = useState<Transaction | null>(null);
@@ -54,6 +57,7 @@ export default function Transactions() {
       if (categoryFilter !== 'all' && t.categoryId !== categoryFilter) return false;
       if (personFilter !== 'all' && t.paidBy !== personFilter) return false;
       if (statusFilter !== 'all' && t.status !== statusFilter) return false;
+      if (autoOnly && !isAutomatic(t)) return false;
       if (!q) return true;
       return (
         t.payee.toLowerCase().includes(q) ||
@@ -62,7 +66,7 @@ export default function Transactions() {
         t.tags.some((tag) => tag.includes(q))
       );
     });
-  }, [base, query, filter, categoryFilter, personFilter, statusFilter, cats]);
+  }, [base, query, filter, categoryFilter, personFilter, statusFilter, autoOnly, cats]);
 
   // Totals must use base amounts: adding dollars to euros would be nonsense.
   const real = rows.filter((t) => !t.transferId);
@@ -104,6 +108,8 @@ export default function Transactions() {
 
   return (
     <div className="col gap-16">
+      <LabelReview />
+
       {rows.some((t) => needsApproval(state, t)) && (
         <Card
           title="Waiting on both of you"
@@ -192,6 +198,14 @@ export default function Transactions() {
               </option>
             ))}
           </select>
+          <label className="tiny faint row gap-4" title="Only transactions the app categorized for you">
+            <input
+              type="checkbox"
+              checked={autoOnly}
+              onChange={(e) => setAutoOnly(e.target.checked)}
+            />
+            auto-filed only
+          </label>
           <select
             className="select"
             style={{ maxWidth: 150 }}
@@ -346,6 +360,15 @@ export default function Transactions() {
                       </td>
                       <td className="small">
                         {cats[t.categoryId]?.icon} {cats[t.categoryId]?.name ?? '—'}
+                        {isAutomatic(t) && (
+                          <span
+                            className="chip"
+                            style={{ marginLeft: 6 }}
+                            title={`${explainLabel(state, t).label}. ${explainLabel(state, t).detail}`}
+                          >
+                            auto
+                          </span>
+                        )}
                       </td>
                       <td className="small">
                         {person ? (
@@ -522,11 +545,24 @@ function TransactionModal({
             />
           </div>
         </Field>
-        <Field label="Category">
+        <Field
+          label="Category"
+          hint={isAutomatic(draft) ? explainLabel(state, draft).label : undefined}
+        >
           <select
             className="select"
             value={draft.categoryId}
-            onChange={(e) => set('categoryId', e.target.value)}
+            onChange={(e) =>
+              // Choosing by hand is a decision, and decisions are never
+              // overwritten by rules later.
+              setDraft((d) => ({
+                ...d,
+                categoryId: e.target.value,
+                categorySource: 'manual',
+                categoryRuleId: undefined,
+                categoryConfidence: undefined,
+              }))
+            }
           >
             {state.categories
               .filter((c) => !c.archived)

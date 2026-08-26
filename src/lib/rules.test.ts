@@ -5,6 +5,8 @@ import { matches, runRules } from './rules';
 
 const people = [{ id: 'a' }, { id: 'b' }];
 
+// These exercise rule matching, so the subject is a transaction nobody has
+// filed by hand yet. Protection of manual choices is covered in labels.test.ts.
 const tx = (over: Partial<Transaction> = {}): Transaction =>
   testTransaction({
     amount: -4500,
@@ -12,6 +14,7 @@ const tx = (over: Partial<Transaction> = {}): Transaction =>
     categoryId: 'unsorted',
     payee: 'SAFEWAY #1123',
     paidBy: 'a',
+    categorySource: 'default',
     ...over,
   });
 
