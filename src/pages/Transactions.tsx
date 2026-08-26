@@ -5,6 +5,7 @@ import { categoryMap, txInMonth } from '../store/selectors';
 import { dateLabel, monthLabel, todayISO } from '../lib/date';
 import { uid } from '../lib/id';
 import { guessColumns, parseCSV, rowsToTransactions, transactionsToCSV, type ColumnMap } from '../lib/csv';
+import { ingest, ofxSource } from '../lib/sources';
 import { shareOf } from '../lib/split';
 import { categorizeIncoming, ruleFromTransaction } from '../lib/rules';
 import { activePerson, needsApproval, visiblePayee } from '../lib/couples';
@@ -757,25 +758,64 @@ function ImportModal({ onClose }: { onClose: () => void }) {
   const [hasHeader, setHasHeader] = useState(true);
   const [accountId, setAccountId] = useState(state.accounts[0]?.id ?? '');
   const [paidBy, setPaidBy] = useState<ID | 'joint'>('joint');
+  // OFX/QFX/QIF need no column mapping — the format already says what is what.
+  const [statement, setStatement] = useState<{
+    name: string;
+    rows: import('../lib/sources').SourceTransaction[];
+    warnings: string[];
+    balance?: number;
+  } | null>(null);
 
   const header = rows[0] ?? [];
+  const defaultCategoryId =
+    state.categories.find((c) => c.name === 'Miscellaneous')?.id ?? state.categories[0].id;
+
   const preview = useMemo(() => {
     const account = state.accounts.find((a) => a.id === accountId);
-    if (!account || !rows.length) return null;
-    return rowsToTransactions(rows, map, {
-      account,
-      categories: state.categories,
-      existing: state.transactions,
-      defaultCategoryId:
-        state.categories.find((c) => c.name === 'Miscellaneous')?.id ?? state.categories[0].id,
-      paidBy,
-      hasHeader,
-    });
-  }, [rows, map, accountId, paidBy, hasHeader, state]);
+    if (!account) return null;
+    if (statement) {
+      const result = ingest(state, statement.rows, { account, paidBy, defaultCategoryId });
+      return {
+        transactions: result.transactions,
+        duplicates: result.duplicates,
+        skipped: result.skipped,
+        matchedByExternalId: result.matchedByExternalId,
+      };
+    }
+    if (!rows.length) return null;
+    return {
+      ...rowsToTransactions(rows, map, {
+        account,
+        categories: state.categories,
+        existing: state.transactions,
+        defaultCategoryId,
+        paidBy,
+        hasHeader,
+      }),
+      matchedByExternalId: 0,
+    };
+  }, [rows, map, accountId, paidBy, hasHeader, state, statement, defaultCategoryId]);
 
   const onFile = async (file: File) => {
     const text = await file.text();
+    const looksStructured =
+      /\.(ofx|qfx|qif)$/i.test(file.name) ||
+      text.slice(0, 2000).toUpperCase().includes('<OFX>') ||
+      /^!Type:/im.test(text.slice(0, 200));
+
+    if (looksStructured) {
+      const result = await ofxSource.fetch({ file: { name: file.name, text } });
+      setStatement({
+        name: file.name,
+        rows: result.transactions,
+        warnings: result.warnings,
+        balance: result.accounts[0]?.balance,
+      });
+      setRows([]);
+      return;
+    }
     const parsed = parseCSV(text);
+    setStatement(null);
     setRows(parsed);
     setMap(guessColumns(parsed[0] ?? []));
   };
@@ -812,17 +852,55 @@ function ImportModal({ onClose }: { onClose: () => void }) {
       }
     >
       <p className="small muted">
-        Export a CSV from your bank and drop it in. Columns are detected automatically, duplicates are
-        skipped, and payees you have categorized before are matched to the same category again.
+        Drop in a CSV, or better, an OFX/QFX/QIF export. Quicken formats carry the bank's own transaction
+        id, so re-importing a statement that overlaps one you already loaded is exact rather than guessed.
+        Columns are detected automatically, payees you have categorized before are matched again, and your
+        rules run over everything on the way in.
       </p>
 
       <input
         ref={fileRef}
         type="file"
-        accept=".csv,text/csv"
+        accept=".csv,.ofx,.qfx,.qif,text/csv"
         className="input"
         onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])}
       />
+
+      {statement && (
+        <>
+          <div className="callout small">
+            Read <span className="bold">{statement.name}</span> — {statement.rows.length} transactions
+            {statement.balance !== undefined && `, bank balance ${(statement.balance / 100).toFixed(2)}`}.
+            No column mapping needed.
+          </div>
+          {statement.warnings.map((w) => (
+            <div className="callout warn small" key={w}>
+              {w}
+            </div>
+          ))}
+          <div className="field-row">
+            <Field label="Into account">
+              <select className="select" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+                {state.accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Paid by">
+              <select className="select" value={paidBy} onChange={(e) => setPaidBy(e.target.value as ID | 'joint')}>
+                <option value="joint">Joint</option>
+                {state.people.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+        </>
+      )}
 
       {rows.length > 0 && (
         <>
@@ -881,39 +959,46 @@ function ImportModal({ onClose }: { onClose: () => void }) {
               </Field>
             ))}
           </div>
-
-          {preview && (
-            <div className="callout small">
-              {preview.transactions.length} ready to import · {preview.duplicates} duplicates skipped ·{' '}
-              {preview.skipped} rows unreadable
-            </div>
-          )}
-
-          {preview && preview.transactions.length > 0 && (
-            <div className="table-wrap" style={{ maxHeight: 260, overflowY: 'auto' }}>
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Payee</th>
-                    <th className="right">Amount</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {preview.transactions.slice(0, 30).map((t) => (
-                    <tr key={t.id}>
-                      <td className="small faint">{t.date}</td>
-                      <td className="small">{t.payee}</td>
-                      <td className={`right num small ${t.amount > 0 ? 'pos' : ''}`}>
-                        {(t.amount / 100).toFixed(2)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
         </>
+      )}
+
+      {preview && (
+        <div className="callout small">
+          <span className="bold">{preview.transactions.length}</span> ready to import ·{' '}
+          {preview.duplicates} duplicates skipped
+          {preview.matchedByExternalId > 0 &&
+            ` (${preview.matchedByExternalId} matched exactly on the bank's own id)`}{' '}
+          · {preview.skipped} rows unreadable
+        </div>
+      )}
+
+      {preview && preview.transactions.length > 0 && (
+        <div className="table-wrap" style={{ maxHeight: 260, overflowY: 'auto' }}>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Payee</th>
+                <th>Category</th>
+                <th className="right">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {preview.transactions.slice(0, 30).map((t) => (
+                <tr key={t.id}>
+                  <td className="small faint">{t.date}</td>
+                  <td className="small">{t.payee}</td>
+                  <td className="tiny faint">
+                    {state.categories.find((c) => c.id === t.categoryId)?.name}
+                  </td>
+                  <td className={`right num small ${t.amount > 0 ? 'pos' : ''}`}>
+                    {(t.amount / 100).toFixed(2)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </Modal>
   );
