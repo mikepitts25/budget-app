@@ -59,3 +59,42 @@ export function addYears(iso: string, years: number): string {
   const [y, m, d] = iso.split('-').map(Number);
   return toISODate(new Date(y + years, m - 1, d));
 }
+
+export function addDays(iso: string, days: number): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  return toISODate(new Date(y, m - 1, d + days));
+}
+
+/** Same day next month, clamped when the target month is shorter. */
+export function addMonthsToDate(iso: string, months: number): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  const target = new Date(y, m - 1 + months, 1);
+  const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  return toISODate(new Date(target.getFullYear(), target.getMonth(), Math.min(d, lastDay)));
+}
+
+export const dayOfWeek = (iso: string): number => {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d).getDay();
+};
+
+export const dayOfMonth = (iso: string): number => Number(iso.slice(8, 10));
+
+export function weekdayLabel(iso: string): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('en-US', { weekday: 'short' });
+}
+
+/** Inclusive list of ISO dates from `from` to `to`. */
+export function dateRange(from: string, to: string): string[] {
+  const out: string[] = [];
+  let cursor = from;
+  while (cursor <= to && out.length < 4000) {
+    out.push(cursor);
+    cursor = addDays(cursor, 1);
+  }
+  return out;
+}
+
+export const daysBetweenDates = (a: string, b: string): number =>
+  Math.round((Date.parse(b) - Date.parse(a)) / 86_400_000);

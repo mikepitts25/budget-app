@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useApp } from './store/store';
 import { addMonths, currentMonth, monthLabel } from './lib/date';
 import Dashboard from './pages/Dashboard';
+import Forecast from './pages/Forecast';
 import Transactions from './pages/Transactions';
 import Budget from './pages/Budget';
 import Together from './pages/Together';
@@ -16,7 +17,7 @@ import Reports from './pages/Reports';
 import SettingsPage from './pages/SettingsPage';
 
 export type PageKey =
-  | 'dashboard' | 'transactions' | 'budget' | 'together'
+  | 'dashboard' | 'forecast' | 'transactions' | 'budget' | 'together'
   | 'goals' | 'savings' | 'mindmap' | 'plans'
   | 'debt' | 'networth' | 'retirement' | 'reports' | 'settings';
 
@@ -30,6 +31,7 @@ interface NavEntry {
 
 const NAV: NavEntry[] = [
   { key: 'dashboard', label: 'Dashboard', icon: '◈', section: 'Overview', subtitle: 'Where the two of you stand this month' },
+  { key: 'forecast', label: 'Forecast', icon: '◔', section: 'Overview', subtitle: 'What is coming, and what is safe to spend' },
   { key: 'transactions', label: 'Transactions', icon: '≡', section: 'Overview', subtitle: 'Every dollar in and out' },
   { key: 'reports', label: 'Reports', icon: '◫', section: 'Overview', subtitle: 'Trends across categories and months' },
 
@@ -49,6 +51,7 @@ const NAV: NavEntry[] = [
 
 const PAGES: Record<PageKey, React.ComponentType> = {
   dashboard: Dashboard,
+  forecast: Forecast,
   transactions: Transactions,
   budget: Budget,
   together: Together,
